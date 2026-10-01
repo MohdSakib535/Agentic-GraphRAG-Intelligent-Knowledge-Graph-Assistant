@@ -92,6 +92,9 @@ class OpenAIEmbedder:
             "chunk_size": settings.embedding_batch_size,
             "max_retries": settings.llm_max_retries,
             "request_timeout": settings.llm_timeout_seconds,
+            # Chunks are bounded by CHUNK_SIZE (default 800 tokens), far below embedding context limits, so the
+            # client-side tiktoken length check (which downloads encodings at runtime) is unnecessary.
+            "check_embedding_ctx_length": False,
         }
         # text-embedding-3-* support shortened output dimensions.
         if settings.embedding_model.startswith("text-embedding-3"):
