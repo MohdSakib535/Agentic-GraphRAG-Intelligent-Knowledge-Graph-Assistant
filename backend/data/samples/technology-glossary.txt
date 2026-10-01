@@ -1,0 +1,19 @@
+Technology Glossary
+
+Kafka
+Kafka is a distributed event streaming platform originally developed at LinkedIn and now maintained by the Apache Software Foundation. It is used to build real-time data pipelines and streaming applications.
+
+Redis
+Redis is an in-memory key-value data store commonly used as a cache, message broker and session store. Redis offers sub-millisecond latency.
+
+PostgreSQL
+PostgreSQL is an open-source object-relational database system known for reliability, SQL compliance and extensibility.
+
+FastAPI
+FastAPI is a modern Python web framework for building APIs with automatic OpenAPI documentation based on type hints.
+
+Django
+Django is a high-level Python web framework that encourages rapid development with an included ORM and admin interface.
+
+Neo4j
+Neo4j is a graph database management system. Neo4j stores nodes and relationships natively and uses the Cypher query language.
