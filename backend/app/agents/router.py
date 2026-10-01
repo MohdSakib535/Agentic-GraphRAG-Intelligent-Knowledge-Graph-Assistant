@@ -146,6 +146,8 @@ def choose_strategy(question: str, hints: list[str], linked: list[LinkedEntity],
         return "HYBRID", "document_lookup", "asks for supporting documents of graph facts"
     if is_definition_question(question) and not semantic_hints:
         return "VECTOR", "definition", "definition/explanation question - semantic passage retrieval"
+    if is_definition_question(question) and semantic_hints and n_linked:
+        return "HYBRID", "summary", "explanation about related entities - needs passages and graph facts"
     if semantic_hints and n_linked:
         multi_hop = len(set(semantic_hints)) >= 2 or (n_linked >= 2 and answer_type is not None)
         if multi_hop:

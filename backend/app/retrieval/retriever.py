@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 
 STRATEGIES = ("VECTOR", "GRAPH", "HYBRID")
 # Bump when retrieval logic changes so cached results from older code are never served.
-RETRIEVAL_VERSION = "2"
+RETRIEVAL_VERSION = "6"
 
 
 class RetrievalService:

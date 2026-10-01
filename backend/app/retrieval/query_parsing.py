@@ -27,18 +27,19 @@ _RELATION_CUES: dict[str, tuple[str, ...]] = {
 }
 _COMPILED = {rel: re.compile(r"\b(?:" + "|".join(cues) + r")\b", re.IGNORECASE) for rel, cues in _RELATION_CUES.items()}
 
+_W = r"(?:(?!(?:is|are|was|were|does|do|did|has|have|can|will)\b)\w+\s+)?"
 _ANSWER_TYPE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\b(?:which|what)\s+(?:\w+\s+)?(?:technolog\w*|tech|tools?|frameworks?|databases?|stack|languages?)\b", re.I), EntityType.TECHNOLOGY),
-    (re.compile(r"\b(?:which|what)\s+(?:\w+\s+)?projects?\b", re.I), EntityType.PROJECT),
-    (re.compile(r"\b(?:which|what)\s+(?:\w+\s+)?compan(?:y|ies)\b", re.I), EntityType.COMPANY),
-    (re.compile(r"\b(?:which|what)\s+(?:\w+\s+)?(?:departments?|teams?|divisions?)\b", re.I), EntityType.DEPARTMENT),
-    (re.compile(r"\b(?:which|what)\s+(?:\w+\s+)?products?\b", re.I), EntityType.PRODUCT),
-    (re.compile(r"\b(?:who|whom)\b|\b(?:which|what)\s+(?:\w+\s+)?(?:developers?|engineers?|people|persons?|employees?|managers?|members?|staff)\b", re.I), EntityType.PERSON),
+    (re.compile(r"\b(?:which|what)\s+" + _W + r"(?:technolog\w*|tech|tools?|frameworks?|databases?|stack|languages?)\b", re.I), EntityType.TECHNOLOGY),
+    (re.compile(r"\b(?:which|what)\s+" + _W + r"projects?\b", re.I), EntityType.PROJECT),
+    (re.compile(r"\b(?:which|what)\s+" + _W + r"compan(?:y|ies)\b", re.I), EntityType.COMPANY),
+    (re.compile(r"\b(?:which|what)\s+" + _W + r"(?:departments?|teams?|divisions?)\b", re.I), EntityType.DEPARTMENT),
+    (re.compile(r"\b(?:which|what)\s+" + _W + r"products?\b", re.I), EntityType.PRODUCT),
+    (re.compile(r"\b(?:who|whom)\b|\b(?:which|what)\s+" + _W + r"(?:developers?|engineers?|people|persons?|employees?|managers?|members?|staff)\b", re.I), EntityType.PERSON),
     (re.compile(r"\bwhere\b|\b(?:which|what)\s+(?:locations?|cities|city|countr\w+|offices?)\b", re.I), EntityType.LOCATION),
 ]
 
 _DEFINITION_RE = re.compile(
-    r"^\s*(?:what\s+(?:is|are|does)|explain|describe|define|tell me about|how\s+(?:does|do|is|are|can)|why\s+(?:is|are|does|do)|"
+    r"^\s*(?:what\s+(?:is|are)|explain|describe|define|tell me about|how\s+(?:does|do|is|are|can)|why\s+(?:is|are|does|do)|"
     r"what's|overview of|summari[sz]e)\b",
     re.IGNORECASE,
 )
@@ -100,3 +101,54 @@ def temporal_constraints(question: str) -> list[str]:
 
 def filename_mentions(question: str) -> list[str]:
     return [m.group(1) for m in _FILENAME_RE.finditer(question)]
+
+
+# Nouns that name the *kind* of answer rather than information that must be present in evidence.
+ANSWER_NOUNS = {
+    "city", "cities", "location", "locations", "country", "countries", "office", "offices", "person", "people",
+    "persons", "developer", "developers", "engineer", "engineers", "employee", "employees", "member", "members",
+    "staff", "team", "teams", "department", "departments", "technology", "technologies", "tool", "tools",
+    "project", "projects", "company", "companies", "product", "products", "name", "names", "list", "role",
+    "manager", "managers", "something", "anything", "detail", "details", "relationship", "between", "shared",
+    "common", "both", "use", "used", "uses", "using", "document", "documents", "source", "sources",
+    "information", "knowledge", "base", "uploaded", "evidence", "support", "supports", "purpose", "goal",
+    "goals", "overview", "summary", "description", "function", "responsibility", "responsibilities", "about",
+    "work", "works", "working", "does", "doing",
+}
+_INTERMEDIATE_NOUNS = [
+    (re.compile(r"\bprojects?\b", re.I), EntityType.PROJECT.value),
+    (re.compile(r"\b(?:teams?|departments?)\b", re.I), EntityType.DEPARTMENT.value),
+    (re.compile(r"\bcompan(?:y|ies)\b", re.I), EntityType.COMPANY.value),
+    (re.compile(r"\bproducts?\b", re.I), EntityType.PRODUCT.value),
+]
+
+
+def _strip_names(question: str, entity_names: list[str]) -> str:
+    for name in sorted(entity_names, key=len, reverse=True):
+        question = re.sub(re.escape(name), " ", question, flags=re.IGNORECASE)
+    return question
+
+
+def information_terms(question: str, entity_names: list[str]) -> set[str]:
+    """Terms carrying the information need beyond entity names and relationship cues.
+
+    "What is the budget of Project Beta?" -> {"budget"}: evidence that never mentions a
+    budget cannot answer the question, however well it matches "Project Beta".
+    """
+    from app.utils.text import term_set
+
+    text = _strip_names(question, entity_names)
+    for rx in _COMPILED.values():
+        text = rx.sub(" ", text)
+    entity_terms = {t for n in entity_names for t in term_set(n)}
+    answer_terms = term_set(" ".join(ANSWER_NOUNS))
+    return {t for t in term_set(text) if t not in entity_terms and t not in answer_terms and not t.isdigit()}
+
+
+def intermediate_type(question: str, entity_names: list[str], answer_type: str | None) -> str | None:
+    """Entity type named generically in the question ("projects that Priya manages") - a hop to traverse."""
+    text = _strip_names(question, entity_names)
+    for rx, etype in _INTERMEDIATE_NOUNS:
+        if etype != answer_type and rx.search(text):
+            return etype
+    return None

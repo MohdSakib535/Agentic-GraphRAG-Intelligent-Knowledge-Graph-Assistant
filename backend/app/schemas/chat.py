@@ -68,6 +68,7 @@ class MessageOut(ORMModel):
     content: str
     retrieval_strategy: str | None
     confidence: float | None
+    latency_ms: int | None = None
     sources: list[Any]
     trace: dict[str, Any]
     created_at: datetime

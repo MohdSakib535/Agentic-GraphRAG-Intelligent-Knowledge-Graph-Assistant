@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.agents.nodes.common import AgentDeps, emit, key_terms, relevant_facts, step, verbalize
 from app.core.errors import AppError
 from app.llm.client import to_messages
+from app.retrieval.query_parsing import information_terms
 from app.utils.text import term_set, truncate
 
 AMBIGUOUS_BAND = (0.3, 0.75)
@@ -61,10 +62,20 @@ def heuristic_grade(state: dict[str, Any]) -> tuple[float, dict[str, Any]]:
         grade = graph_grade
     else:
         grade = max(vector_grade, graph_grade)
+    # Hallucination guards: named entities and the information asked for must appear in the evidence.
+    if entity_cov is not None:
+        grade *= 0.3 + 0.7 * entity_cov
+    all_names = list({*names, *(state.get("entities") or [])})
+    info = information_terms(state.get("standalone_question") or question, all_names)
+    all_evidence = term_set(" ".join(c.get("text", "") for c in chunks) + " " + fact_text)
+    info_cov = len(info & all_evidence) / len(info) if info else None
+    if info_cov is not None and info_cov < 0.34:
+        grade = min(grade, 0.3)
     detail = {
         "term_coverage": round(term_cov, 3), "entity_coverage": None if entity_cov is None else round(entity_cov, 3),
         "top_score": round(top_score, 3), "graph_signal": graph_signal, "relevant_facts": len(rel_facts),
-        "chunks": len(chunks), "facts": len(facts),
+        "chunks": len(chunks), "facts": len(facts), "information_terms": sorted(info),
+        "information_coverage": None if info_cov is None else round(info_cov, 3),
     }
     return round(grade, 3), detail
 

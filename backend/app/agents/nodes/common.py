@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.graph.repository import GraphReader
 from app.llm.client import LLMClient
+from app.retrieval.query_parsing import is_definition_question
 from app.utils.text import STOPWORDS, content_terms, split_sentences, term_set, truncate
 
 logger = get_logger(__name__)
@@ -187,10 +188,21 @@ def relevant_facts(state: dict[str, Any], facts: list[dict[str, Any]]) -> list[d
     return out
 
 
+def defined_entities(question: str, entity_names: list[str]) -> list[str]:
+    """Entities the question asks to define ("What is Neo4j and ...", "Describe Project Alpha")."""
+    out = []
+    for name in entity_names:
+        if re.search(rf"\b(?:what\s+(?:is|are)|define|describe|explain|tell\s+me\s+about)\s+(?:the\s+)?{re.escape(name)}\b",
+                     question, re.I):
+            out.append(name)
+    return out
+
+
 def extractive_sentences(question: str, evidence: Evidence, entity_names: list[str], limit: int = 3) -> list[tuple[str, int]]:
     q_terms = key_terms(question) | {t for n in entity_names for t in term_set(n)}
     if not q_terms:
         return []
+    to_define = defined_entities(question, entity_names)
     scored: list[tuple[float, str, int]] = []
     for rank, src in enumerate(evidence.sources):
         if src["kind"] != "chunk":
@@ -200,10 +212,16 @@ def extractive_sentences(question: str, evidence: Evidence, entity_names: list[s
             overlap = len(q_terms & terms) / len(q_terms)
             if overlap <= 0 or len(sentence) < 20:
                 continue
-            definitional = 0.15 if re.search(r"\b(?:is|are)\s+(?:a|an|the)\b", sentence) else 0.0
-            scored.append((overlap + definitional - 0.03 * rank, sentence, src["index"]))
+            bonus = 0.15 if re.search(r"\b(?:is|are)\s+(?:a|an|the)\b", sentence) else 0.0
+            scored.append((overlap + bonus - 0.03 * rank, sentence, src["index"]))
     scored.sort(key=lambda x: -x[0])
     chosen: list[tuple[str, int]] = []
+    # Guarantee one defining sentence per entity the question asks to define.
+    for name in to_define:
+        pattern = re.compile(rf"\s*(?:the\s+)?{re.escape(name)}\s+(?:is|are)\s+(?:a|an|the)\b", re.I)
+        best = next(((s, i) for _, s, i in scored if pattern.match(s)), None)
+        if best and best not in chosen and len(chosen) < limit:
+            chosen.append(best)
     for score, sentence, idx in scored:
         if score < 0.34 or len(chosen) >= limit:
             break
@@ -220,6 +238,17 @@ def heuristic_answer(state: dict[str, Any], evidence: Evidence) -> str:
     anchors = {e["name"] for e in (state.get("linked_entities") or [])}
     bridges = {b["name"] for b in (state.get("bridges") or [])}
     lines: list[str] = []
+    names = [e["name"] for e in (state.get("linked_entities") or [])]
+    explanatory = strategy == "HYBRID" and is_definition_question(question)
+    if explanatory:
+        # "How is Redis used in Project Alpha?": lead with the explanatory passage(s).
+        for sentence, idx in extractive_sentences(question, evidence, names, limit=2):
+            lines.append(f"{sentence} [{idx}]")
+        between = [f for f in facts if f["source"] in anchors and f["target"] in anchors]
+        if between and not candidates:
+            facts = between
+        if lines and facts:
+            lines.append("")
     if facts and strategy in {"GRAPH", "HYBRID"}:
         if candidates:
             cand = set(candidates)
@@ -242,11 +271,10 @@ def heuristic_answer(state: dict[str, Any], evidence: Evidence) -> str:
             if sentence not in seen:
                 seen.add(sentence)
                 lines.append(f"- {sentence}. [{fact['citation']}]")
-    names = [e["name"] for e in (state.get("linked_entities") or [])]
     if strategy == "VECTOR" or not lines:
         for sentence, idx in extractive_sentences(question, evidence, names):
             lines.append(f"{sentence} [{idx}]")
-    elif strategy == "HYBRID" and not candidates:
+    elif strategy == "HYBRID" and not candidates and not explanatory:
         extra = extractive_sentences(question, evidence, names, limit=1)
         if extra:
             lines.append("")

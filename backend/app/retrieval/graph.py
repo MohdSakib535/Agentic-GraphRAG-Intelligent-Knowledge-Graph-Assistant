@@ -23,7 +23,7 @@ from app.graph.repository import GraphReader
 from app.graph.schema import ENTITY_TYPES, RELATION_CONSTRAINTS
 from app.graph.text2cypher import Text2Cypher
 from app.ingestion.entity_resolver import canonical_key
-from app.retrieval.query_parsing import expected_answer_type, primary_relation, relation_hints
+from app.retrieval.query_parsing import expected_answer_type, intermediate_type, primary_relation, relation_hints
 from app.retrieval.types import LinkedEntity, RetrievalResult
 from app.schemas.search import GraphFact
 from app.utils.text import STOPWORDS, normalize_name
@@ -161,7 +161,8 @@ class GraphRetriever:
                     add(others, (0.5 if bridge_ids else 1.0) * hop)
                     frontier = ({r["source_id"] for r in expansion} | {r["target_id"] for r in expansion}) - seen
             candidates, intermediates = self._answer_candidates(
-                list(facts.values()), answer_type, linked, result.bridges, primary_relation(question), hints
+                list(facts.values()), answer_type, linked, result.bridges, primary_relation(question), hints,
+                intermediate_type(question, [e.name for e in linked], answer_type),
             )
             result.answer_candidates = candidates
             result.bridges = result.bridges + intermediates
@@ -182,7 +183,7 @@ class GraphRetriever:
     @staticmethod
     def _answer_candidates(
         facts: list[GraphFact], answer_type: str | None, anchors: list[LinkedEntity], bridges: list[LinkedEntity],
-        answer_rel: str | None = None, hints: list[str] | None = None,
+        answer_rel: str | None = None, hints: list[str] | None = None, via_type: str | None = None,
     ) -> tuple[list[LinkedEntity], list[LinkedEntity]]:
         """Return (answer candidates, intermediate entities used to reach them)."""
         if not answer_type:
@@ -211,8 +212,18 @@ class GraphRetriever:
             return out
 
         via: dict[str, tuple[float, str]] = {}
+        scores: dict[str, tuple[float, str]] = {}
+        if via_type and not bridges and answer_rel:
+            # The question names an intermediate kind ("projects that Priya manages"): traverse it explicitly.
+            others = (set(hints) - {answer_rel}) or None
+            via = adjacent(focus, others, want=via_type)
+            if via:
+                scores = adjacent(set(via), {answer_rel}, want=answer_type)
+            if not scores:
+                via = {}
         rels = {answer_rel} if answer_rel else (set(hints) or None)
-        scores = adjacent(focus, rels, want=answer_type)
+        if not scores:
+            scores = adjacent(focus, rels, want=answer_type)
         if not scores and answer_rel and set(hints) - {answer_rel}:
             # Two hops: anchor -(constraint relation)-> intermediate -(answer relation)-> candidate.
             via = adjacent(focus, set(hints) - {answer_rel}, exclude=answer_type)
