@@ -134,3 +134,11 @@ async def test_tools_reject_missing_tenant_context(container) -> None:
     assert output["ok"] is False and output["error"]["code"] == "VALIDATION_ERROR"
     output = await container.tools.graph_search.ainvoke({"query": "Kafka"}, config={"configurable": {"tenant_id": "x"}})
     assert output["ok"] is False
+
+
+async def test_memory_tracks_bridge_entities_for_follow_ups(container) -> None:
+    conversation = uuid.uuid4().hex
+    await ask(container, "Which developers work on Kafka projects managed by Rahul?", conversation=conversation)
+    follow = await ask(container, "What technologies does that project use?", conversation=conversation)
+    assert follow["standalone_question"] == "What technologies does Project Alpha use?"
+    assert "Kafka" in follow["answer"] and "Redis" in follow["answer"]

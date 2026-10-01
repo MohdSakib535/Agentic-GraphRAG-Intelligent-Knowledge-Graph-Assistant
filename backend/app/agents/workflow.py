@@ -72,11 +72,17 @@ def make_finalize(deps: AgentDeps) -> Any:
         history.append({"role": "assistant", "content": (state.get("answer") or "")[:600]})
         # Conversation memory: recent turns + entities in focus (for "that project", "he"...).
         focus: list[dict[str, str]] = []
+        candidates = set(state.get("answer_candidates") or [])
+        # Bridges first: in "developers on Kafka projects managed by Rahul" the project (Project Alpha) is what a
+        # follow-up "that project" refers to, even though the question never named it.
+        for b in state.get("bridges") or []:
+            if b["name"] not in candidates:
+                focus.append({"name": b["name"], "type": b["type"]})
         for e in state.get("linked_entities") or []:
             focus.append({"name": e["name"], "type": e["type"]})
         for fact in state.get("graph_results") or []:
             for name, etype in ((fact["source"], fact["source_type"]), (fact["target"], fact["target_type"])):
-                if name in (state.get("answer_candidates") or []):
+                if name in candidates:
                     focus.append({"name": name, "type": etype})
         if not focus:
             focus = list(state.get("focus_entities") or [])

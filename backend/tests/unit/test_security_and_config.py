@@ -76,3 +76,8 @@ def test_log_redaction() -> None:
     assert data["password"] == "[REDACTED]" and data["authorization"] == "[REDACTED]"
     assert data["token_usage"] == 42
     assert "sk-abcdef" not in data["msg"] and "eyJhbGciOi" not in data["msg"]
+
+
+def test_cors_origins_parse_from_comma_separated_env(monkeypatch) -> None:
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:8501, https://app.example.com")
+    assert Settings().cors_origins == ["http://localhost:8501", "https://app.example.com"]

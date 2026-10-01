@@ -9,6 +9,7 @@ so another renderer can be swapped in.
 from __future__ import annotations
 
 import base64
+import re
 from html import escape
 from typing import Any
 
@@ -31,7 +32,7 @@ def build_graph_html(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], h
     from pyvis.network import Network
 
     net = Network(height=f"{height}px", width="100%", directed=True, bgcolor="#ffffff", font_color="#222222",
-                  cdn_resources="remote")
+                  cdn_resources="in_line")  # self-contained: no CDN fetch from the browser
     net.barnes_hut(gravity=-4000, central_gravity=0.25, spring_length=140)
     for node in nodes:
         is_focus = highlight is not None and node["id"] == highlight
@@ -39,7 +40,7 @@ def build_graph_html(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], h
             node["id"], label=node["name"], title=escape(f"{node['type']}: {node['name']}"),
             color=TYPE_COLORS.get(node["type"], "#999999"), shape="dot",
             size=28 if is_focus else 12 + min(int(node.get("degree") or 0), 10) * 1.5,
-            borderWidth=4 if is_focus else 1,
+            borderWidth=4 if is_focus else 1, font={"size": 18, "face": "arial"},
         )
     known = {n["id"] for n in nodes}
     for edge in edges:
@@ -48,7 +49,9 @@ def build_graph_html(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], h
             net.add_edge(src, tgt, label=edge["relationship"],
                          title=escape(edge.get("evidence") or edge["relationship"]),
                          arrows="to", font={"size": 10, "align": "middle"})
-    return net.generate_html(notebook=False)
+    html = net.generate_html(notebook=False)
+    # pyvis also links Bootstrap for optional filter menus we don't use; drop every external fetch.
+    return re.sub(r'<(?:link|script)[^>]+(?:href|src)="https?://[^"]+"[^>]*>(?:</script>)?', "", html)
 
 
 def render_graph(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], highlight: str | None = None,

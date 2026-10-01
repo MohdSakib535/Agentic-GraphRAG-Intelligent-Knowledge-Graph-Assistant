@@ -1,4 +1,8 @@
-"""Agentic GraphRAG - Streamlit entry point (login / register / home)."""
+"""Agentic GraphRAG - Streamlit entry point.
+
+Uses ``st.navigation`` so that unauthenticated visitors only see the login page;
+the protected pages are registered only after a successful login.
+"""
 
 from __future__ import annotations
 
@@ -66,16 +70,26 @@ def home_view() -> None:
         """
     )
     cols = st.columns(3)
-    cols[0].page_link("pages/2_Documents.py", label="Upload documents", icon="📄")
-    cols[1].page_link("pages/3_Chat.py", label="Ask questions", icon="💬")
-    cols[2].page_link("pages/4_Knowledge_Graph.py", label="Explore the graph", icon="🕸️")
+    cols[0].page_link(PAGES["documents"], label="Upload documents", icon="📄")
+    cols[1].page_link(PAGES["chat"], label="Ask questions", icon="💬")
+    cols[2].page_link(PAGES["graph"], label="Explore the graph", icon="🕸️")
     cols = st.columns(3)
-    cols[0].page_link("pages/1_Dashboard.py", label="Dashboard", icon="📊")
-    cols[1].page_link("pages/5_Evaluation.py", label="Evaluation", icon="🧪")
-    cols[2].page_link("pages/6_Settings.py", label="Settings", icon="⚙️")
+    cols[0].page_link(PAGES["dashboard"], label="Dashboard", icon="📊")
+    cols[1].page_link(PAGES["evaluation"], label="Evaluation", icon="🧪")
+    cols[2].page_link(PAGES["settings"], label="Settings", icon="⚙️")
 
+
+PAGES = {
+    "dashboard": st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊"),
+    "documents": st.Page("pages/2_Documents.py", title="Documents", icon="📄"),
+    "chat": st.Page("pages/3_Chat.py", title="Chat", icon="💬"),
+    "graph": st.Page("pages/4_Knowledge_Graph.py", title="Knowledge Graph", icon="🕸️"),
+    "evaluation": st.Page("pages/5_Evaluation.py", title="Evaluation", icon="🧪"),
+    "settings": st.Page("pages/6_Settings.py", title="Settings", icon="⚙️"),
+}
 
 if is_authenticated():
-    home_view()
+    navigation = st.navigation([st.Page(home_view, title="Home", icon="🏠", default=True), *PAGES.values()])
 else:
-    login_view()
+    navigation = st.navigation([st.Page(login_view, title="Log in", icon="🔐", default=True)])
+navigation.run()

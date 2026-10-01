@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, computed_field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _RATE_RE = re.compile(r"^\s*(\d+)\s*/\s*(second|minute|hour|day)\s*$", re.IGNORECASE)
 _PERIOD_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     log_level: str = "INFO"
     log_json: bool = True
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:8501"])
+    # Comma-separated in the environment (NoDecode: not parsed as JSON).
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:8501"])
 
     # ------------------------------------------------------------------ LLM
     # "auto" selects "openai" when an API key is configured, otherwise the
@@ -123,7 +124,11 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip().startswith("["):
+        if isinstance(value, str):
+            if value.strip().startswith("["):
+                import json
+
+                return json.loads(value)
             return [v.strip() for v in value.split(",") if v.strip()]
         return value
 

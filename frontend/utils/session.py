@@ -55,7 +55,8 @@ def require_auth() -> APIClient:
     """Stop rendering the page unless the user is logged in."""
     if not is_authenticated():
         st.warning("Please log in to continue.")
-        st.page_link("app.py", label="Go to login", icon="🔐")
+        if st.button("Go to login"):
+            st.rerun()
         st.stop()
     return get_client()
 
@@ -78,7 +79,8 @@ def handle_api_error(exc: APIError) -> None:
     if exc.status == 401:
         clear_session()
         st.error("Your session expired. Please log in again.")
-        st.page_link("app.py", label="Go to login", icon="🔐")
+        if st.button("Log in again"):
+            st.rerun()
         st.stop()
     elif exc.status == 429:
         st.warning(f"Rate limit reached: {exc.message}")

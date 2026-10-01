@@ -10,7 +10,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install -r requirements.txt \
+# Optional build secret "build_ca": a CA bundle for TLS-intercepting corporate proxies. It is only
+# mounted for this step and never stored in an image layer; when empty it has no effect.
+RUN --mount=type=secret,id=build_ca,required=false \
+    if [ -s /run/secrets/build_ca ]; then \
+      export PIP_CERT=/run/secrets/build_ca SSL_CERT_FILE=/run/secrets/build_ca REQUESTS_CA_BUNDLE=/run/secrets/build_ca; \
+    fi \
+    && pip install -r requirements.txt \
     # Warm the tokenizer cache when the network allows it; the app falls back to an approximation otherwise.
     && (python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" || echo "tiktoken cache not warmed")
 
