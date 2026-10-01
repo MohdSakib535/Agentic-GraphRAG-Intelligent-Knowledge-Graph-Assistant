@@ -6,6 +6,7 @@ params or browser storage) and are cleared on logout.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import streamlit as st
@@ -43,11 +44,8 @@ def clear_session() -> None:
 
 
 def logout() -> None:
-    client = get_client()
-    try:
-        client.logout()
-    except APIError:
-        pass  # the local session is cleared regardless
+    with contextlib.suppress(APIError):  # the local session is cleared regardless
+        get_client().logout()
     clear_session()
 
 

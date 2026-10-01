@@ -150,9 +150,9 @@ class RateLimiter:
             oldest_ts = oldest[0][1] if oldest else now
             retry_after = max(1, int(oldest_ts + window_seconds - now) + 1)
             try:
-                await self._client.zrem(redis_key, member)
+                await self._client.zrem(redis_key, member)  # rejected hits don't consume quota
             except RedisError:
-                pass
+                logger.debug("rate_limiter_cleanup_failed")
             raise RateLimitExceeded(retry_after=retry_after)
         return limit - count, 0
 

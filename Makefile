@@ -44,6 +44,9 @@ test-integration: ## Integration tests against running PostgreSQL / Neo4j / Redi
 test-docker: ## Run tests inside the backend container against the compose services
 	$(COMPOSE) exec backend python -m pytest
 
+lint: ## Ruff lint (backend, frontend, tests)
+	ruff check backend frontend tests
+
 eval: ## Trigger an evaluation run via the API (requires TOKEN env var)
 	curl -s -X POST http://localhost:8000/api/v1/evaluation/run -H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' -d '{}'
 

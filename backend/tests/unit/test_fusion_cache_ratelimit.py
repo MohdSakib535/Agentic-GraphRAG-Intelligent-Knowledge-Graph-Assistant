@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.config import Settings
 from app.core.errors import RateLimitExceeded
 from app.db.redis import RateLimiter, TenantCache
 from app.retrieval.hybrid import reciprocal_rank_fusion
 from app.retrieval.reranker import NoopReranker, RerankContext, ScoreReranker, build_reranker
-from app.core.config import Settings
 from app.schemas.search import ChunkHit
 
 
@@ -51,7 +51,7 @@ class FakeRedis:
         self.data[key] = str(int(self.data.get(key, "0")) + 1)
         return int(self.data[key])
 
-    def pipeline(self, transaction: bool = True) -> "FakePipeline":
+    def pipeline(self, transaction: bool = True) -> FakePipeline:
         return FakePipeline(self)
 
     async def zrem(self, key: str, member: str) -> None:
@@ -62,7 +62,7 @@ class FakePipeline:
     def __init__(self, redis: FakeRedis) -> None:
         self.r, self.ops = redis, []
 
-    async def __aenter__(self) -> "FakePipeline":
+    async def __aenter__(self) -> FakePipeline:
         return self
 
     async def __aexit__(self, *exc: object) -> None:

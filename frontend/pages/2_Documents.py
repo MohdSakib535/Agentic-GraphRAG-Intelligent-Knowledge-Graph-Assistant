@@ -33,7 +33,7 @@ def render_pipeline(job: dict | None) -> None:
     current = STAGES.index(stage) if stage in STAGES else (len(STAGES) - 1 if job.get("status") == "COMPLETED" else 0)
     st.progress(int(job.get("progress") or 0) / 100, text=f"{job.get('status')} · {stage} · {job.get('progress')}%")
     lines = []
-    for i, (key, label) in enumerate(PIPELINE):
+    for i, (_, label) in enumerate(PIPELINE):
         if failed and i == current:
             icon = "❌"
         elif i < current or job.get("status") == "COMPLETED":
@@ -65,7 +65,7 @@ watch = st.session_state.get("watch_document")
 if watch:
     try:
         status = client.document_status(watch)
-    except APIError as exc:
+    except APIError:
         status = None
         st.session_state.pop("watch_document", None)
     if status:

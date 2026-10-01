@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.core.dependencies import CurrentUserDep, DBSession, RateLimit, SettingsDep, require_admin, CurrentUser
+from app.core.dependencies import CurrentUser, CurrentUserDep, DBSession, RateLimit, SettingsDep, require_admin
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.auth import (

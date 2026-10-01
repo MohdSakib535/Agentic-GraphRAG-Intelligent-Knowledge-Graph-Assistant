@@ -6,7 +6,15 @@ from typing import Any
 
 from app.core.container import Container
 from app.core.errors import NotFoundError
-from app.schemas.search import EntityDetail, EntityOut, GraphFact, GraphStats, SearchRequest, SearchResponse, SubgraphOut
+from app.schemas.search import (
+    EntityDetail,
+    EntityOut,
+    GraphFact,
+    GraphStats,
+    SearchRequest,
+    SearchResponse,
+    SubgraphOut,
+)
 
 
 def _fact(row: dict[str, Any]) -> GraphFact:

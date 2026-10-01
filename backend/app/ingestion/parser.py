@@ -51,6 +51,14 @@ def _looks_like_heading(line: str) -> bool:
     return capitalised / len(words) >= 0.75 or line.isupper()
 
 
+def _flush_paragraph(blocks: list[TextBlock], paragraph: list[str], page: int, section: str | None) -> None:
+    if paragraph:
+        text = clean_text(" ".join(paragraph))
+        if text:
+            blocks.append(TextBlock(text=text, page_number=page, section=section))
+        paragraph.clear()
+
+
 def parse_pdf(data: bytes) -> ParsedDocument:
     import pymupdf
 
@@ -79,14 +87,6 @@ def parse_pdf(data: bytes) -> ParsedDocument:
         body_size = statistics.median(sizes) if sizes else 0.0
         for page_index, info in enumerate(pages, start=1):
             paragraph: list[str] = []
-
-            def flush(page_no: int = page_index) -> None:
-                if paragraph:
-                    text = clean_text(" ".join(paragraph))
-                    if text:
-                        blocks.append(TextBlock(text=text, page_number=page_no, section=section))
-                    paragraph.clear()
-
             for blk in info.get("blocks", []):
                 for line in blk.get("lines", []):
                     spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
@@ -101,12 +101,12 @@ def parse_pdf(data: bytes) -> ParsedDocument:
                         and not line_text.endswith((".", ","))
                     )
                     if is_heading:
-                        flush()
+                        _flush_paragraph(blocks, paragraph, page_index, section)
                         section = clean_text(line_text)
                         first_heading = first_heading or section
                     else:
                         paragraph.append(line_text)
-                flush()
+                _flush_paragraph(blocks, paragraph, page_index, section)
     finally:
         page_count = doc.page_count
         doc.close()
