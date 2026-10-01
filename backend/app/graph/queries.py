@@ -304,7 +304,7 @@ LIMIT $limit
 EXPAND_SUBGRAPH = """
 MATCH (center:Entity {id: $entity_id, tenant_id: $tenant_id})
 MATCH p = (center)-[*1..{depth}]-(n:Entity {tenant_id: $tenant_id})
-WHERE all(x IN nodes(p) WHERE x.tenant_id = $tenant_id)
+WHERE all(x IN nodes(p) WHERE x:Entity AND x.tenant_id = $tenant_id)
 WITH p LIMIT $limit
 UNWIND relationships(p) AS r
 WITH DISTINCT r

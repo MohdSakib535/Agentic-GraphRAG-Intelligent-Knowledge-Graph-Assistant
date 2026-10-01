@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from contextlib import AsyncExitStack
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -27,7 +26,7 @@ from app.agents.state import INSUFFICIENT_EVIDENCE_ANSWER
 from app.core.config import Settings, get_settings
 from app.core.container import Container, build_container
 from app.core.logging import get_logger
-from app.db.postgres import get_async_sessionmaker, utcnow
+from app.db.postgres import utcnow
 from app.llm.client import start_usage_tracking
 from app.models.evaluation import EvaluationResult, EvaluationRun
 from app.retrieval.query_parsing import expected_answer_type, relation_hints
@@ -203,50 +202,50 @@ async def run_evaluation(container: Container, tenant_id: str, systems: list[str
 
 
 async def execute_evaluation_run(run_id: uuid.UUID, settings: Settings | None = None) -> dict[str, Any]:
-    """Celery entry point: builds its own async resources inside this event loop."""
-    from app.db.neo4j import close_async_driver, init_async_driver
-    from app.db.postgres import dispose_async_engine, init_async_engine
-    from app.db.redis import close_redis, init_redis
+    """Celery entry point. Uses its own, locally scoped connections (never the API's globals)."""
+    import redis.asyncio as aioredis
+    from neo4j import AsyncGraphDatabase
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     settings = settings or get_settings()
-    init_async_engine(settings)
-    driver = init_async_driver(settings)
-    redis_client = init_redis(settings)
-    session_factory = get_async_sessionmaker()
+    engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    driver = AsyncGraphDatabase.driver(
+        settings.neo4j_uri, auth=(settings.neo4j_username, settings.neo4j_password.get_secret_value()))
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
-        async with AsyncExitStack():
-            container = build_container(settings, driver, redis_client)
+        container = build_container(settings, driver, redis_client)
+        async with session_factory() as db:
+            run = await db.get(EvaluationRun, run_id)
+            if run is None:
+                return {"status": "missing"}
+            run.status = "RUNNING"
+            await db.commit()
+            tenant_id, systems = str(run.tenant_id), list(run.systems or SYSTEMS)
+            options = dict(run.summary or {}).get("options", {})
+        try:
+            results, summary = await run_evaluation(container, tenant_id, systems, options.get("categories"),
+                                                    options.get("limit"))
+        except Exception as exc:
+            logger.exception("evaluation_run_failed")
             async with session_factory() as db:
                 run = await db.get(EvaluationRun, run_id)
-                if run is None:
-                    return {"status": "missing"}
-                run.status = "RUNNING"
-                await db.commit()
-                tenant_id, systems = str(run.tenant_id), list(run.systems or SYSTEMS)
-                options = dict(run.summary or {}).get("options", {})
-            try:
-                results, summary = await run_evaluation(container, tenant_id, systems, options.get("categories"),
-                                                        options.get("limit"))
-            except Exception as exc:
-                logger.exception("evaluation_run_failed")
-                async with session_factory() as db:
-                    run = await db.get(EvaluationRun, run_id)
-                    if run is not None:
-                        run.status, run.error_message, run.finished_at = "FAILED", type(exc).__name__, utcnow()
-                        await db.commit()
-                return {"status": "failed"}
-            async with session_factory() as db:
-                run = await db.get(EvaluationRun, run_id)
-                assert run is not None
-                db.add_all(EvaluationResult(run_id=run.id, tenant_id=run.tenant_id, **r) for r in results)
-                run.status, run.summary, run.finished_at = "COMPLETED", {"options": options, **summary}, utcnow()
-                run.question_count = len({r["question_id"] for r in results})
-                await db.commit()
-            return {"status": "completed", "results": len(results)}
+                if run is not None:
+                    run.status, run.error_message, run.finished_at = "FAILED", type(exc).__name__, utcnow()
+                    await db.commit()
+            return {"status": "failed"}
+        async with session_factory() as db:
+            run = await db.get(EvaluationRun, run_id)
+            assert run is not None
+            db.add_all(EvaluationResult(run_id=run.id, tenant_id=run.tenant_id, **r) for r in results)
+            run.status, run.summary, run.finished_at = "COMPLETED", {"options": options, **summary}, utcnow()
+            run.question_count = len({r["question_id"] for r in results})
+            await db.commit()
+        return {"status": "completed", "results": len(results)}
     finally:
-        await close_redis()
-        await close_async_driver()
-        await dispose_async_engine()
+        await redis_client.aclose()
+        await driver.close()
+        await engine.dispose()
 
 
 async def latest_results(db: Any, tenant_id: uuid.UUID, run_id: uuid.UUID | None = None) -> tuple[EvaluationRun | None, list[EvaluationResult]]:

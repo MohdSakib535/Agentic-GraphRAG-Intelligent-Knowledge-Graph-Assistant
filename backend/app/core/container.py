@@ -52,13 +52,18 @@ class Container:
 
 def build_container(
     settings: Settings,
-    driver: AsyncDriver,
+    driver: AsyncDriver | None,
     redis_client: Any | None,
     checkpointer: BaseCheckpointSaver | None = None,
     llm: LLMClient | None = None,
     embedder: Embedder | None = None,
+    reader: Any | None = None,
 ) -> Container:
-    reader = GraphReader(driver, settings)
+    """``reader`` may be injected (any object implementing the GraphReader interface) for tests."""
+    if reader is None:
+        if driver is None:
+            raise ValueError("Either a Neo4j driver or a reader is required")
+        reader = GraphReader(driver, settings)
     embedder = embedder or build_embedder(settings)
     llm = llm if llm is not None else build_llm_client(settings)
     cache = TenantCache(redis_client, settings.cache_ttl_seconds) if redis_client is not None else None
