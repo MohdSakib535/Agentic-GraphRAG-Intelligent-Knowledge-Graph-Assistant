@@ -1,0 +1,13 @@
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "B", "I", "UP", "SIM"]
+ignore = ["E501", "B008", "B904", "SIM108", "SIM117", "UP047", "UP040"]
+
+[lint.isort]
+known-third-party = ["neo4j", "alembic"]
+known-first-party = ["app", "services", "components", "utils", "fakes", "conftest", "openai_stub"]
+
+[lint.per-file-ignores]
+"backend/tests/**" = ["E402"]

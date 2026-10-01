@@ -1,0 +1,364 @@
+{
+  "description": "Evaluation set over the sample TechCorp corpus (backend/data/samples). expected_keywords must appear in a correct answer; evidence_keywords (default: expected_keywords) must appear in retrieved context. Unanswerable questions are correct only when the assistant abstains.",
+  "questions": [
+    {
+      "id": "Q01",
+      "category": "simple_factual",
+      "question": "What is Kafka?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "distributed",
+        "event streaming"
+      ]
+    },
+    {
+      "id": "Q02",
+      "category": "simple_factual",
+      "question": "What is Redis?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "in-memory"
+      ]
+    },
+    {
+      "id": "Q03",
+      "category": "simple_factual",
+      "question": "What is PostgreSQL?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "relational database"
+      ]
+    },
+    {
+      "id": "Q04",
+      "category": "simple_factual",
+      "question": "What is FastAPI?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "Python",
+        "APIs"
+      ]
+    },
+    {
+      "id": "Q05",
+      "category": "simple_factual",
+      "question": "What is Neo4j?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "graph database"
+      ]
+    },
+    {
+      "id": "Q06",
+      "category": "simple_factual",
+      "question": "What is Django?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "Python web framework"
+      ]
+    },
+    {
+      "id": "Q07",
+      "category": "semantic",
+      "question": "Explain how Kafka decouples producers and consumers.",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "topics"
+      ],
+      "evidence_keywords": [
+        "producers and consumers"
+      ]
+    },
+    {
+      "id": "Q08",
+      "category": "semantic",
+      "question": "Describe the purpose of Project Alpha.",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "order analytics"
+      ]
+    },
+    {
+      "id": "Q09",
+      "category": "semantic",
+      "question": "What does Project Gamma build?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "supplier knowledge graph"
+      ]
+    },
+    {
+      "id": "Q10",
+      "category": "semantic",
+      "question": "Explain the role of Kafka at TechCorp.",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "backbone"
+      ],
+      "evidence_keywords": [
+        "asynchronous communication"
+      ]
+    },
+    {
+      "id": "Q11",
+      "category": "semantic",
+      "question": "What is Project Beta?",
+      "expected_strategy": "VECTOR",
+      "expected_keywords": [
+        "customer support portal"
+      ]
+    },
+    {
+      "id": "Q12",
+      "category": "graph_relationship",
+      "question": "Who manages Project Alpha?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Rahul"
+      ]
+    },
+    {
+      "id": "Q13",
+      "category": "graph_relationship",
+      "question": "Who manages Project Gamma?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Priya"
+      ]
+    },
+    {
+      "id": "Q14",
+      "category": "graph_relationship",
+      "question": "Which technologies does Project Alpha use?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Kafka",
+        "Redis",
+        "PostgreSQL",
+        "FastAPI"
+      ]
+    },
+    {
+      "id": "Q15",
+      "category": "graph_relationship",
+      "question": "Who works on Project Alpha?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Amit",
+        "Neha"
+      ]
+    },
+    {
+      "id": "Q16",
+      "category": "graph_relationship",
+      "question": "Which projects use Kafka?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Project Alpha",
+        "Project Gamma"
+      ]
+    },
+    {
+      "id": "Q17",
+      "category": "graph_relationship",
+      "question": "Who reports to Rahul?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Amit",
+        "Neha",
+        "Priya"
+      ]
+    },
+    {
+      "id": "Q18",
+      "category": "graph_relationship",
+      "question": "Which company does Amit work for?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "TechCorp"
+      ]
+    },
+    {
+      "id": "Q19",
+      "category": "graph_relationship",
+      "question": "What does Project Gamma depend on?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Project Alpha"
+      ]
+    },
+    {
+      "id": "Q20",
+      "category": "graph_relationship",
+      "question": "Which city is the Engineering Department based in?",
+      "expected_strategy": "GRAPH",
+      "expected_keywords": [
+        "Bangalore"
+      ]
+    },
+    {
+      "id": "Q21",
+      "category": "multi_hop",
+      "question": "Who manages projects that use Kafka?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Rahul",
+        "Priya"
+      ]
+    },
+    {
+      "id": "Q22",
+      "category": "multi_hop",
+      "question": "Which developers work on Kafka projects managed by Rahul?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Amit",
+        "Neha"
+      ]
+    },
+    {
+      "id": "Q23",
+      "category": "multi_hop",
+      "question": "Who works on projects managed by Rahul that use Kafka?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Amit",
+        "Neha"
+      ]
+    },
+    {
+      "id": "Q24",
+      "category": "multi_hop",
+      "question": "Which technologies are shared between Project Alpha and Project Beta?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Redis",
+        "PostgreSQL"
+      ]
+    },
+    {
+      "id": "Q25",
+      "category": "multi_hop",
+      "question": "Which developers use Kafka and Redis?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Amit"
+      ]
+    },
+    {
+      "id": "Q26",
+      "category": "multi_hop",
+      "question": "Which technologies are used by projects that Priya manages?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Kafka",
+        "Neo4j",
+        "FastAPI"
+      ]
+    },
+    {
+      "id": "Q27",
+      "category": "multi_hop",
+      "question": "Who manages the project that Amit works on?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Rahul"
+      ]
+    },
+    {
+      "id": "Q28",
+      "category": "multi_hop",
+      "question": "Which projects managed by Rahul use Redis?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Project Alpha",
+        "Project Beta"
+      ]
+    },
+    {
+      "id": "Q29",
+      "category": "hybrid",
+      "question": "How is Redis used in Project Alpha?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "cache"
+      ]
+    },
+    {
+      "id": "Q30",
+      "category": "hybrid",
+      "question": "What is Project Alpha and which technologies does it use?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "order analytics",
+        "Kafka",
+        "Redis"
+      ]
+    },
+    {
+      "id": "Q31",
+      "category": "hybrid",
+      "question": "What is Neo4j and which project uses it?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "graph database",
+        "Project Gamma"
+      ]
+    },
+    {
+      "id": "Q32",
+      "category": "hybrid",
+      "question": "Describe the technology stack of Project Beta.",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Django",
+        "PostgreSQL",
+        "Redis"
+      ]
+    },
+    {
+      "id": "Q33",
+      "category": "hybrid",
+      "question": "What documents support the relationship between Rahul and Project Alpha?",
+      "expected_strategy": "HYBRID",
+      "expected_keywords": [
+        "Rahul manages Project Alpha"
+      ]
+    },
+    {
+      "id": "Q34",
+      "category": "unanswerable",
+      "question": "What is the salary of the CEO of TechCorp?",
+      "expected_strategy": null,
+      "expected_keywords": []
+    },
+    {
+      "id": "Q35",
+      "category": "unanswerable",
+      "question": "Tell me something not contained in the documents.",
+      "expected_strategy": null,
+      "expected_keywords": []
+    },
+    {
+      "id": "Q36",
+      "category": "unanswerable",
+      "question": "Who manages Project Omega?",
+      "expected_strategy": null,
+      "expected_keywords": []
+    },
+    {
+      "id": "Q37",
+      "category": "unanswerable",
+      "question": "What is the budget of Project Beta?",
+      "expected_strategy": null,
+      "expected_keywords": []
+    },
+    {
+      "id": "Q38",
+      "category": "unanswerable",
+      "question": "When was TechCorp acquired by Google?",
+      "expected_strategy": null,
+      "expected_keywords": []
+    }
+  ]
+}
