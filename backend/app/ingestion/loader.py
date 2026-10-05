@@ -42,6 +42,11 @@ class ValidatedFile:
 def detect_file_type(filename: str) -> str:
     ext = Path(filename).suffix.lower().lstrip(".")
     ext = _EXTENSION_ALIASES.get(ext, ext)
+    if ext in {"csv", "tsv", "xlsx"}:
+        raise UnsupportedFileError(
+            "Tabular files are analysed with 'Chat with CSV' (POST /api/v1/datasets/upload), not as documents",
+            code="USE_DATASETS_FOR_TABULAR_DATA",
+        )
     if ext not in SUPPORTED_TYPES:
         raise UnsupportedFileError(
             f"Unsupported file type '.{ext or '?'}'. Supported: PDF, DOCX, TXT, MD", code="UNSUPPORTED_FILE_TYPE"

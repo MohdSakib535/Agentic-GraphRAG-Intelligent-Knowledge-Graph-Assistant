@@ -50,6 +50,7 @@ def chunk_records(
             "section": c.section,
             "source_filename": source_filename,
             "document_title": title,
+            "content_type": c.content_type,
         }
         for c in chunks
     ]

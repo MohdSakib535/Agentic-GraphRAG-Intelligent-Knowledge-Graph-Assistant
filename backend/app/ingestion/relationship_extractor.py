@@ -229,9 +229,81 @@ class HeuristicGraphExtractor:
         entities = self.entities.extract(text, source_chunk)
         per_sentence = [(s, self.entities.mentions(s)) for s in split_sentences(text)]
         raw_rels = self.relations.extract(text, per_sentence, source_chunk)
+        if "|---" in text:
+            table_entities, table_rels = table_facts(text, self.entities)
+            known = {(e.name.lower(), e.type.value) for e in entities}
+            entities += [e for e in validate_entities(table_entities, source_chunk)
+                         if (e.name.lower(), e.type.value) not in known]
+            raw_rels += table_rels
         return ChunkExtraction(
             entities=entities, relationships=validate_relationships(raw_rels, entities, source_chunk)
         )
+
+
+# Column header -> (relationship, direction, type of the cell values). "in": cell -> row entity.
+_HEADER_RULES: list[tuple[re.Pattern[str], RelationType, str, EntityType]] = [
+    (re.compile(r"\b(?:manager|managed by|owner|lead|head)\b", re.I), RelationType.MANAGES, "in", EntityType.PERSON),
+    (re.compile(r"\b(?:developers?|engineers?|team members?|members?|staff|assignees?|contributors?)\b", re.I),
+     RelationType.WORKS_ON, "in", EntityType.PERSON),
+    (re.compile(r"\b(?:technolog\w*|tech stack|stack|tools?|frameworks?|uses|databases?)\b", re.I),
+     RelationType.USES, "out", EntityType.TECHNOLOGY),
+    (re.compile(r"\b(?:company|employer|organi[sz]ation)\b", re.I), RelationType.WORKS_FOR, "out", EntityType.COMPANY),
+    (re.compile(r"\b(?:reports to)\b", re.I), RelationType.REPORTS_TO, "out", EntityType.PERSON),
+    (re.compile(r"\b(?:depends on|dependenc\w*)\b", re.I), RelationType.DEPENDS_ON, "out", EntityType.PROJECT),
+    (re.compile(r"\b(?:department|division)\b", re.I), RelationType.BELONGS_TO, "out", EntityType.DEPARTMENT),
+    (re.compile(r"\b(?:location|city|office|country|based in)\b", re.I), RelationType.BELONGS_TO, "out",
+     EntityType.LOCATION),
+]
+_KEY_TYPES = [
+    (re.compile(r"\bprojects?\b", re.I), EntityType.PROJECT), (re.compile(r"\bproducts?\b", re.I), EntityType.PRODUCT),
+    (re.compile(r"\b(?:name|employee|person|people|member)\b", re.I), EntityType.PERSON),
+    (re.compile(r"\b(?:compan\w*)\b", re.I), EntityType.COMPANY),
+    (re.compile(r"\b(?:technolog\w*|tool)\b", re.I), EntityType.TECHNOLOGY),
+    (re.compile(r"\b(?:department|team)\b", re.I), EntityType.DEPARTMENT),
+]
+
+
+def table_facts(text: str, recogniser: HeuristicEntityExtractor) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Relationships implied by Markdown table structure: the first column names the row entity, other
+    column headers name the relationship ("Manager" -> MANAGES, "Technology" -> USES, ...)."""
+    rows = [[c.strip() for c in line.strip().strip("|").split("|")]
+            for line in text.split("\n") if line.strip().startswith("|") and not re.match(r"^\|[\s:\-|]+\|$", line.strip())]
+    if len(rows) < 2:
+        return [], []
+    header, body = rows[0], rows[1:]
+    key_type = next((t for rx, t in _KEY_TYPES if rx.search(header[0])), None)
+    rules = {i: rule for i, h in enumerate(header) if i > 0
+             for rule in [next(((rel, d, t) for rx, rel, d, t in _HEADER_RULES if rx.search(h)), None)] if rule}
+    entities: list[dict[str, str]] = []
+    relations: list[dict[str, str]] = []
+
+    def typed(name: str, fallback: EntityType | None) -> str | None:
+        mention = next((m for m in recogniser.mentions(name) if m.start == 0 and m.end >= len(name) - 1), None)
+        if mention is not None:
+            return mention.type
+        return fallback.value if fallback else None
+
+    for row in body:
+        if not row or not row[0]:
+            continue
+        key = row[0]
+        key_t = typed(key, key_type)
+        if key_t is None:
+            continue
+        key_name = f"Project {key}" if key_t == EntityType.PROJECT.value and not key.lower().startswith("project") else key
+        entities.append({"name": key_name, "type": key_t, "description": " | ".join(row)[:300]})
+        for col, (rel, direction, cell_type) in rules.items():
+            if col >= len(row):
+                continue
+            for value in re.split(r"\s*(?:,|;|/| and )\s*", row[col]):
+                if not value or value.lower() in {"-", "n/a", "none", "tbd"}:
+                    continue
+                value_t = typed(value, cell_type) or cell_type.value
+                entities.append({"name": value, "type": value_t, "description": ""})
+                src, tgt = (value, key_name) if direction == "in" else (key_name, value)
+                relations.append({"source": src, "relationship": rel.value, "target": tgt,
+                                  "evidence": f"{header[0]}: {key}; {header[col]}: {row[col]}"})
+    return entities, relations
 
 
 _EXTRACTION_SYSTEM = """You extract a knowledge graph from enterprise documents.

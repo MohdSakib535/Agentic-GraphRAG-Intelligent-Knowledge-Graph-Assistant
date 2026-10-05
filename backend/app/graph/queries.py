@@ -29,7 +29,7 @@ WITH d, c, row WHERE c.tenant_id = $tenant_id
 SET c.document_id = $document_id, c.chunk_index = row.chunk_index, c.text = row.text,
     c.token_count = row.token_count, c.page_number = row.page_number, c.page_end = row.page_end,
     c.section = row.section, c.source_filename = row.source_filename,
-    c.document_title = row.document_title
+    c.document_title = row.document_title, c.content_type = coalesce(row.content_type, 'text')
 MERGE (d)-[:CONTAINS]->(c)
 RETURN count(c) AS written
 """

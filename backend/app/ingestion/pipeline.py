@@ -21,7 +21,7 @@ from app.ingestion.embedding import Embedder
 from app.ingestion.entity_resolver import EntityResolver
 from app.ingestion.loader import FileStorage
 from app.ingestion.metadata import chunk_records, document_metadata
-from app.ingestion.parser import parse_document
+from app.ingestion.parser import ParseOptions, parse_document
 from app.ingestion.relationship_extractor import ChunkExtraction, GraphExtractor
 from app.models.job import JobStage
 from app.utils.text import clean_text
@@ -91,7 +91,9 @@ class IngestionPipeline:
         # 1. Parse
         mark(JobStage.PARSING)
         data = self.storage.load(storage_path)
-        parsed = parse_document(data, file_type, filename)
+        parsed = parse_document(data, file_type, filename, ParseOptions(
+            ocr_enabled=self.settings.ocr_enabled, ocr_language=self.settings.ocr_language,
+            ocr_dpi=self.settings.ocr_dpi, ocr_min_page_chars=self.settings.ocr_min_page_chars))
 
         # 2. Clean
         mark(JobStage.CLEANING, blocks=len(parsed.blocks), pages=parsed.page_count)

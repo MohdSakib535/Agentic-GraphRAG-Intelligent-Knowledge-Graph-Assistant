@@ -1,4 +1,8 @@
-"""Token-aware, sentence-preserving chunker with configurable size and overlap."""
+"""Token-aware, sentence-preserving chunker with configurable size and overlap.
+
+Tables are atomic: a table becomes its own chunk (never merged with prose, never split mid-row);
+a table larger than ``chunk_size`` is split by rows with the header repeated in every part.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ class Chunk:
     page_number: int | None
     section: str | None
     page_end: int | None = None
+    content_type: str = "text"  # "text" | "table"
     metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -65,7 +70,47 @@ class TokenChunker:
                     units.append(_Unit(sentence, tokens, block.page_number, block.section))
         return units
 
+    def split_table(self, table: str, reserve: int = 0) -> list[str]:
+        budget = max(50, self.chunk_size - reserve)
+        lines = table.split("\n")
+        if count_tokens(table) <= budget or len(lines) <= 3:
+            return [table]
+        header, rows = lines[:2], lines[2:]
+        parts: list[str] = []
+        current: list[str] = []
+        for row in rows:
+            candidate = "\n".join(header + current + [row])
+            if current and count_tokens(candidate) > budget:
+                parts.append("\n".join(header + current))
+                current = []
+            current.append(row)
+        if current:
+            parts.append("\n".join(header + current))
+        return parts
+
     def chunk(self, blocks: list[TextBlock]) -> list[Chunk]:
+        """Chunk text runs between tables; tables become dedicated chunks in document order."""
+        chunks: list[Chunk] = []
+        run: list[TextBlock] = []
+        for block in [*blocks, None]:
+            if block is not None and block.kind != "table":
+                run.append(block)
+                continue
+            for c in self._chunk_text(run):
+                c.index = len(chunks)
+                chunks.append(c)
+            run = []
+            if block is None:
+                break
+            caption = f"Table ({block.section})" if block.section else "Table"
+            for part in self.split_table(block.text, reserve=count_tokens(caption) + 2):
+                text = f"{caption}:\n{part}"
+                chunks.append(Chunk(index=len(chunks), text=text, token_count=count_tokens(text),
+                                    page_number=block.page_number, page_end=block.page_number,
+                                    section=block.section, content_type="table"))
+        return chunks
+
+    def _chunk_text(self, blocks: list[TextBlock]) -> list[Chunk]:
         units = self._units(blocks)
         chunks: list[Chunk] = []
         current: list[_Unit] = []

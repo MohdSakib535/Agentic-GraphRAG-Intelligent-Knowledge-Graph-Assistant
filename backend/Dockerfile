@@ -9,6 +9,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Tesseract powers OCR of scanned PDFs (PyMuPDF calls it for image-only pages).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 # Optional build secret "build_ca": a CA bundle for TLS-intercepting corporate proxies. It is only
 # mounted for this step and never stored in an image layer; when empty it has no effect.
