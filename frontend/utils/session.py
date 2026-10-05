@@ -49,6 +49,22 @@ def logout() -> None:
     clear_session()
 
 
+def is_admin() -> bool:
+    return (st.session_state.get("user") or {}).get("role") == "admin"
+
+
+def require_admin() -> APIClient:
+    client = require_auth()
+    if not is_admin():
+        st.error("This page is available to workspace administrators only.")
+        st.stop()
+    return client
+
+
+def parse_groups(text: str) -> list[str]:
+    return sorted({g.strip().lower() for g in text.replace(";", ",").split(",") if g.strip()})
+
+
 def require_auth() -> APIClient:
     """Stop rendering the page unless the user is logged in."""
     if not is_authenticated():

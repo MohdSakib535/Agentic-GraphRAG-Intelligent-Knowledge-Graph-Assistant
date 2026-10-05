@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from components.agent_status import describe_event
-from components.chat import render_assistant_result, render_stored_message
+from components.chat import render_assistant_result, render_feedback, render_stored_message
 from services.api_client import APIError
 from utils.session import handle_api_error, require_auth, sidebar_user_box
 
@@ -31,6 +31,7 @@ with st.sidebar:
         if st.button(("▶ " if active else "") + conv["title"][:40], key=f"conv-{conv['id']}", width="stretch"):
             st.session_state["conversation_id"] = conv["id"]
             st.session_state["messages"] = None  # load lazily below
+            st.session_state.pop("export", None)
             st.rerun()
     if st.session_state.get("conversation_id") and st.button("🗑️ Delete conversation", width="stretch"):
         try:
@@ -41,6 +42,20 @@ with st.sidebar:
         st.session_state["messages"] = []
         st.rerun()
     streaming = st.toggle("Stream agent activity (SSE)", value=True)
+    if st.session_state.get("conversation_id"):
+        st.divider()
+        st.subheader("Export")
+        fmt = st.radio("Format", ["Markdown", "PDF"], horizontal=True, label_visibility="collapsed")
+        if st.button("Prepare export", width="stretch"):
+            try:
+                st.session_state["export"] = (fmt, client.export_conversation(st.session_state["conversation_id"],
+                                                                              fmt.lower()))
+            except APIError as exc:
+                st.error(str(exc))
+        if export := st.session_state.get("export"):
+            ext, mime = (".pdf", "application/pdf") if export[0] == "PDF" else (".md", "text/markdown")
+            st.download_button(f"Download {export[0]}", export[1], file_name=f"conversation{ext}", mime=mime,
+                               width="stretch")
 
 st.title("💬 Chat")
 st.caption("Try: *What is Kafka?* · *Who manages Project Alpha?* · "
@@ -66,6 +81,7 @@ for msg in messages:
     else:
         with st.chat_message("assistant"):
             render_assistant_result(msg["result"])
+            render_feedback(msg["result"].get("message_id"))
 
 prompt = st.chat_input("Ask about your knowledge base…", max_chars=4000)
 if prompt:
@@ -111,6 +127,10 @@ if prompt:
             handle_api_error(exc)
         if result:
             render_assistant_result(result, show_answer=False)
+            if result.get("cached"):
+                st.caption("⚡ Served from the answer cache")
+            render_feedback(result.get("message_id"))
             st.session_state["conversation_id"] = result["conversation_id"]
+            st.session_state.pop("export", None)
             messages.append({"role": "assistant", "result": result})
     st.session_state["messages"] = messages

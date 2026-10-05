@@ -42,6 +42,20 @@ with c:
     st.metric("Max upload (MB)", cfg["max_upload_size_mb"])
     st.write("Rate limits:", cfg["rate_limits"])
 
+st.subheader("Features")
+obs = cfg.get("observability") or {}
+features = {
+    "OCR for scanned PDFs": cfg.get("ocr_enabled"),
+    "Answer cache (Redis)": cfg.get("answer_cache_enabled"),
+    "Sign in with Google": cfg.get("google_login_enabled"),
+    "OpenTelemetry tracing": obs.get("tracing"),
+    "Prometheus metrics (/metrics)": obs.get("metrics"),
+    "LangSmith tracing": obs.get("langsmith"),
+}
+fc = st.columns(3)
+for i, (label, enabled) in enumerate(features.items()):
+    fc[i % 3].markdown(f"{'🟢' if enabled else '⚪'} {label}")
+
 st.subheader("Service health")
 hc = st.columns(len(health["checks"]))
 for col, (name, check) in zip(hc, health["checks"].items(), strict=True):

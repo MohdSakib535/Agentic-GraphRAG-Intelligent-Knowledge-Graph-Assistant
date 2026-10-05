@@ -9,6 +9,7 @@ import streamlit as st
 
 from components.agent_status import render_trace
 from components.citations import render_citations
+from services.api_client import APIError
 
 STRATEGY_BADGES = {"VECTOR": "🔵 VECTOR", "GRAPH": "🟠 GRAPH", "HYBRID": "🟣 HYBRID", "DIRECT": "⚪ DIRECT"}
 
@@ -55,6 +56,32 @@ def render_assistant_result(result: dict[str, Any], show_answer: bool = True) ->
     render_trace(result.get("trace") or [])
 
 
+def render_feedback(message_id: str | None, current: int | None = None) -> None:
+    """👍 / 👎 on an answer. Ratings feed the admin feedback view and the evaluation set."""
+    if not message_id:
+        return
+    from utils.session import get_client
+
+    key = f"fb-{message_id}"
+    rating = st.session_state.get(key, current)
+    cols = st.columns([1, 1, 10])
+    for col, value, icon in ((cols[0], 1, "👍"), (cols[1], -1, "👎")):
+        if col.button(icon, key=f"{key}-{value}", type="primary" if rating == value else "secondary",
+                      help="Helpful" if value > 0 else "Not helpful"):
+            try:
+                if rating == value:
+                    get_client().clear_rating(message_id)
+                    st.session_state[key] = None
+                else:
+                    get_client().rate_message(message_id, value)
+                    st.session_state[key] = value
+            except APIError as exc:
+                st.error(str(exc))
+            st.rerun()
+    if rating:
+        cols[2].caption("Thanks for the feedback!" if rating > 0 else "Thanks — this question is flagged for review.")
+
+
 def render_stored_message(message: dict[str, Any]) -> None:
     """Render a message loaded from the conversation history API."""
     with st.chat_message(message["role"]):
@@ -72,3 +99,4 @@ def render_stored_message(message: dict[str, Any]) -> None:
                 "trace": trace.get("steps") or [],
                 "rewritten_query": trace.get("rewritten_query"),
             }, show_answer=False)
+            render_feedback(message.get("id"), message.get("feedback"))

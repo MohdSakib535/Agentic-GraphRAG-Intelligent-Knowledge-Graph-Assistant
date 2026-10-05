@@ -122,6 +122,9 @@ def sync_google_drive(connector_id: uuid.UUID, settings: Settings | None = None,
     except AppError as exc:
         status, error = "FAILED", f"{exc.code}: {exc.message}"
         logger.warning("connector_sync_failed", extra={"connector_id": str(connector_id), "code": exc.code})
+    except Exception:  # never leave the connector stuck in RUNNING
+        status, error = "FAILED", "INTERNAL_ERROR: the sync failed unexpectedly"
+        logger.exception("connector_sync_crashed", extra={"connector_id": str(connector_id)})
     finally:
         client.close()
     with sync_session_scope() as db:

@@ -100,6 +100,11 @@ class SSOExchangeRequest(BaseModel):
     code: str = Field(min_length=20, max_length=200)
 
 
+@router.get("/providers", summary="Sign-in methods available on this deployment (public)")
+async def providers(settings: SettingsDep) -> dict[str, bool]:
+    return {"password": True, "google": settings.google_login_enabled}
+
+
 @router.get("/google/login", dependencies=[auth_rate_limit], summary="Start Sign in with Google (browser redirect)")
 async def google_login(db: DBSession, settings: SettingsDep) -> RedirectResponse:
     return RedirectResponse(await GoogleLogin(db, settings).authorization_url(), status_code=status.HTTP_302_FOUND)

@@ -16,6 +16,8 @@ from typing import Any
 import httpx
 
 DEFAULT_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
+# URL of the API as seen from the user's browser (Google sign-in redirects through it).
+PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "http://localhost:8000/api/v1").rstrip("/")
 
 
 @dataclass
@@ -64,16 +66,20 @@ class APIClient:
         except (ValueError, AttributeError):
             raise APIError(response.status_code, "HTTP_ERROR", response.text[:300]) from None
 
-    def _request(self, method: str, path: str, *, retry: bool = True, **kwargs: Any) -> Any:
+    def _send(self, method: str, path: str, *, retry: bool = True, **kwargs: Any) -> httpx.Response:
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.request(method, f"{self.base_url}{path}", headers=self._headers(), **kwargs)
         except httpx.HTTPError as exc:
             raise APIError(503, "BACKEND_UNREACHABLE", f"Cannot reach the API: {type(exc).__name__}") from exc
         if response.status_code == 401 and retry and self.tokens and self._try_refresh():
-            return self._request(method, path, retry=False, **kwargs)
+            return self._send(method, path, retry=False, **kwargs)
         if response.status_code >= 400:
             self._raise(response)
+        return response
+
+    def _request(self, method: str, path: str, *, retry: bool = True, **kwargs: Any) -> Any:
+        response = self._send(method, path, retry=retry, **kwargs)
         if response.status_code == 204 or not response.content:
             return None
         return response.json()
@@ -106,6 +112,24 @@ class APIClient:
         self.tokens = Tokens(data["access_token"], data["refresh_token"])
         return data
 
+    def auth_providers(self) -> dict[str, bool]:
+        return self._request("GET", "/auth/providers", retry=False)
+
+    def google_exchange(self, code: str) -> dict[str, Any]:
+        data = self._request("POST", "/auth/google/exchange", retry=False, json={"code": code})
+        self.tokens = Tokens(data["access_token"], data["refresh_token"])
+        return data
+
+    def list_users(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/auth/users")
+
+    def create_user(self, email: str, password: str, role: str, groups: list[str], full_name: str | None) -> dict[str, Any]:
+        return self._request("POST", "/auth/users", json={"email": email, "password": password, "role": role,
+                                                          "groups": groups, "full_name": full_name or None})
+
+    def update_user(self, user_id: str, **changes: Any) -> dict[str, Any]:
+        return self._request("PATCH", f"/auth/users/{user_id}", json=changes)
+
     def logout(self) -> None:
         if self.tokens:
             try:
@@ -117,9 +141,14 @@ class APIClient:
         return self._request("GET", "/auth/me")
 
     # ------------------------------------------------------------ documents
-    def upload_document(self, filename: str, content: bytes, content_type: str | None) -> dict[str, Any]:
+    def upload_document(self, filename: str, content: bytes, content_type: str | None,
+                        access_groups: list[str] | None = None) -> dict[str, Any]:
         files = {"file": (filename, content, content_type or "application/octet-stream")}
-        return self._request("POST", "/documents/upload", files=files)
+        return self._request("POST", "/documents/upload", files=files,
+                             data={"access_groups": ",".join(access_groups or [])})
+
+    def set_document_access(self, document_id: str, access_groups: list[str]) -> dict[str, Any]:
+        return self._request("PUT", f"/documents/{document_id}/access", json={"access_groups": access_groups})
 
     def list_documents(self, limit: int = 100, offset: int = 0, status: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"limit": limit, "offset": offset}
@@ -192,6 +221,54 @@ class APIClient:
     def delete_conversation(self, conversation_id: str) -> None:
         self._request("DELETE", f"/chat/conversations/{conversation_id}")
 
+    def export_conversation(self, conversation_id: str, fmt: str = "markdown") -> bytes:
+        return self._send("GET", f"/chat/conversations/{conversation_id}/export", params={"format": fmt}).content
+
+    def rate_message(self, message_id: str, rating: int, comment: str | None = None) -> dict[str, Any]:
+        return self._request("PUT", f"/chat/messages/{message_id}/feedback", json={"rating": rating, "comment": comment})
+
+    def clear_rating(self, message_id: str) -> None:
+        self._request("DELETE", f"/chat/messages/{message_id}/feedback")
+
+    def feedback(self, rating: int | None = None) -> list[dict[str, Any]]:
+        return self._request("GET", "/chat/feedback", params={"rating": rating} if rating is not None else None)
+
+    def feedback_evaluation_questions(self) -> dict[str, Any]:
+        return self._request("GET", "/chat/feedback/evaluation-questions")
+
+    # ------------------------------------------------------ chat with CSV
+    def upload_dataset(self, filename: str, content: bytes, access_groups: list[str] | None = None) -> dict[str, Any]:
+        return self._request("POST", "/datasets/upload", files={"file": (filename, content, "text/csv")},
+                             data={"access_groups": ",".join(access_groups or [])})
+
+    def datasets(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/datasets")
+
+    def dataset(self, dataset_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/datasets/{dataset_id}")
+
+    def query_dataset(self, dataset_id: str, question: str, sql: str | None = None) -> dict[str, Any]:
+        return self._request("POST", f"/datasets/{dataset_id}/query", json={"question": question, "sql": sql or None})
+
+    def delete_dataset(self, dataset_id: str) -> None:
+        self._request("DELETE", f"/datasets/{dataset_id}")
+
+    # --------------------------------------------------------- connectors
+    def connectors(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/connectors")
+
+    def create_connector(self, name: str, folder_id: str, service_account_json: str, access_groups: list[str],
+                         sync_now: bool = True) -> dict[str, Any]:
+        return self._request("POST", "/connectors", json={
+            "name": name, "folder_id": folder_id, "service_account_json": service_account_json,
+            "access_groups": access_groups, "sync_now": sync_now})
+
+    def sync_connector(self, connector_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/connectors/{connector_id}/sync")
+
+    def delete_connector(self, connector_id: str, delete_documents: bool = False) -> None:
+        self._request("DELETE", f"/connectors/{connector_id}", params={"delete_documents": str(delete_documents).lower()})
+
     # ------------------------------------------------------- search / graph
     def search(self, query: str, strategy: str = "HYBRID", top_k: int = 8) -> dict[str, Any]:
         return self._request("POST", "/search", json={"query": query, "strategy": strategy, "top_k": top_k})
@@ -218,6 +295,27 @@ class APIClient:
         if types:
             params["types"] = types
         return self._request("GET", "/graph/subgraph", params=params)
+
+    # ------------------------------------------------- graph curation (admin)
+    def update_entity(self, entity_id: str, **changes: Any) -> dict[str, Any]:
+        return self._request("PATCH", f"/graph/entities/{entity_id}", json=changes)
+
+    def merge_entities(self, keep_id: str, merge_ids: list[str]) -> dict[str, Any]:
+        return self._request("POST", "/graph/entities/merge", json={"keep_id": keep_id, "merge_ids": merge_ids})
+
+    def delete_entity(self, entity_id: str) -> None:
+        self._request("DELETE", f"/graph/entities/{entity_id}")
+
+    def add_relationship(self, source_id: str, rel_type: str, target_id: str, evidence: str | None) -> dict[str, Any]:
+        return self._request("POST", "/graph/relationships", json={"source_id": source_id, "type": rel_type,
+                                                                   "target_id": target_id, "evidence": evidence or None})
+
+    def delete_relationship(self, source_id: str, rel_type: str, target_id: str) -> None:
+        self._request("POST", "/graph/relationships/delete",
+                      json={"source_id": source_id, "type": rel_type, "target_id": target_id})
+
+    def graph_schema(self) -> dict[str, str]:
+        return self._request("GET", "/graph/schema")
 
     # ------------------------------------------------------------ evaluation
     def run_evaluation(self, systems: list[str] | None = None, categories: list[str] | None = None,

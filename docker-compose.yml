@@ -162,6 +162,7 @@ services:
       secrets: [build_ca]
     environment:
       API_BASE_URL: http://backend:8000/api/v1
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000/api/v1}
     ports:
       - "8501:8501"
     depends_on:
