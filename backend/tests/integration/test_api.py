@@ -276,3 +276,37 @@ def test_answer_cache_respects_memory_and_permissions(client) -> None:
     restricted = chat(client, member, "Which projects use Kafka?")
     assert restricted["cached"] is False and "Project Alpha" in restricted["answer"]
     assert restricted["sources"] and all(s["source_filename"] != "architecture.pdf" for s in restricted["sources"])
+
+
+def test_feedback_and_conversation_export(client, tenant_a) -> None:
+    good = chat(client, tenant_a, "Who manages Project Gamma?")
+    bad = chat(client, tenant_a, "What is the budget of Project Beta?")
+    r = client.put(f"{API}/chat/messages/{good['message_id']}/feedback", headers=auth(tenant_a), json={"rating": 1})
+    assert r.status_code == 200 and r.json()["rating"] == 1
+    client.put(f"{API}/chat/messages/{bad['message_id']}/feedback", headers=auth(tenant_a),
+               json={"rating": -1, "comment": "Budget is in the finance deck"})
+    assert client.put(f"{API}/chat/messages/{bad['message_id']}/feedback", headers=auth(tenant_a),
+                      json={"rating": 5}).status_code == 422
+    other = register(client, "Other Feedback Corp")
+    assert client.put(f"{API}/chat/messages/{good['message_id']}/feedback", headers=auth(other),
+                      json={"rating": -1}).status_code == 404  # cannot rate someone else's message
+    msgs = client.get(f"{API}/chat/conversations/{good['conversation_id']}/messages", headers=auth(tenant_a)).json()
+    assert msgs[1]["feedback"] == 1
+    down = client.get(f"{API}/chat/feedback", headers=auth(tenant_a), params={"rating": -1}).json()
+    assert down[0]["question"] == "What is the budget of Project Beta?" and down[0]["comment"].startswith("Budget")
+    dataset = client.get(f"{API}/chat/feedback/evaluation-questions", headers=auth(tenant_a)).json()
+    assert dataset["questions"][0]["question"] == "What is the budget of Project Beta?"
+    assert dataset["questions"][0]["category"] == "user_feedback"
+
+    md = client.get(f"{API}/chat/conversations/{good['conversation_id']}/export", headers=auth(tenant_a))
+    assert md.status_code == 200 and md.headers["content-type"].startswith("text/markdown")
+    assert "## Q: Who manages Project Gamma?" in md.text and "**Sources**" in md.text and "Priya" in md.text
+    pdf = client.get(f"{API}/chat/conversations/{good['conversation_id']}/export", headers=auth(tenant_a),
+                     params={"format": "pdf"})
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+    import pymupdf
+
+    text = "".join(p.get_text() for p in pymupdf.open(stream=pdf.content, filetype="pdf"))
+    assert "Who manages Project Gamma?" in text and "Priya" in text
+    assert client.get(f"{API}/chat/conversations/{good['conversation_id']}/export",
+                      headers=auth(other)).status_code == 404

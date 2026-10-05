@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -73,3 +73,9 @@ class MessageOut(ORMModel):
     sources: list[Any]
     trace: dict[str, Any]
     created_at: datetime
+    feedback: int | None = None
+
+
+class FeedbackRequest(BaseModel):
+    rating: Literal[1, -1] = Field(description="1 = helpful (👍), -1 = not helpful (👎)")
+    comment: str | None = Field(default=None, max_length=1000)
