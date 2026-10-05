@@ -95,7 +95,7 @@ def configure_logging(level: str = "INFO", json_logs: bool = True) -> None:
     root.addHandler(handler)
     root.setLevel(level.upper())
     # Quiet noisy libraries; their DEBUG output may include payloads.
-    for noisy in ("httpx", "httpcore", "openai", "neo4j", "urllib3", "multipart", "watchfiles"):
+    for noisy in ("httpx", "httpcore", "openai", "botocore", "boto3", "neo4j", "urllib3", "multipart", "watchfiles"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

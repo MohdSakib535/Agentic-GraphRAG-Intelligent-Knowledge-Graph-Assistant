@@ -254,7 +254,7 @@ class EntityResolver:
         if not candidates:
             return None, 0.0
         vectors: list[list[float]] | None = None
-        if self.embedder is not None and self.settings.resolved_embedding_provider == "openai":
+        if self.embedder is not None and self.settings.uses_semantic_embeddings:
             try:
                 vectors = self.embedder.embed_documents([ent.name] + [c["name"] for c in candidates])
             except AppError:

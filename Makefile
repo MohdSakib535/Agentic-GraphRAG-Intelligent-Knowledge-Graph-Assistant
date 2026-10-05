@@ -1,4 +1,4 @@
-.PHONY: help up down logs build ps seed migrate test test-unit test-integration lint samples eval clean
+.PHONY: help up down logs build ps seed reindex migrate test test-unit test-integration lint samples eval clean
 
 COMPOSE ?= docker compose
 
@@ -25,6 +25,9 @@ build: ## Build images
 
 migrate: ## Run Alembic migrations
 	$(COMPOSE) exec backend alembic upgrade head
+
+reindex: ## Re-embed all chunks with the configured embedding provider (after switching OpenAI <-> Bedrock)
+	$(COMPOSE) exec backend python -m app.scripts.reindex_embeddings
 
 seed: ## Create demo user (demo@techcorp.com / DemoPassw0rd) and ingest sample documents
 	$(COMPOSE) exec backend python -m app.scripts.seed_demo

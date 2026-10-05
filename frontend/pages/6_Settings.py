@@ -27,6 +27,9 @@ with a:
     st.metric("LLM model", cfg["llm_model"])
     st.metric("Embedding model", cfg["embedding_model"])
     st.metric("Embedding dimensions", cfg["embedding_dimensions"])
+    if cfg.get("aws_region"):
+        st.metric("AWS region (Bedrock)", cfg["aws_region"])
+    st.caption("Switch providers with `USE_BEDROCK` (true = Amazon Bedrock, false = OpenAI) in the server `.env`.")
 with b:
     st.subheader("Retrieval")
     st.metric("Top K", cfg["top_k"])

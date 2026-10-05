@@ -139,9 +139,37 @@ class OpenAIEmbedder:
         return self._check([vec])[0]
 
 
+class BedrockEmbedder(OpenAIEmbedder):
+    """Amazon Bedrock embeddings (Titan Text Embeddings v2 by default; Cohere Embed also works).
+
+    Shares batching, retries and dimension checks with :class:`OpenAIEmbedder`; only the client differs.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        import os
+
+        from langchain_aws import BedrockEmbeddings
+
+        from app.llm.client import bedrock_client_kwargs
+
+        self.dimensions = settings.embedding_dimensions  # == BEDROCK_EMBEDDING_DIMENSIONS (see Settings)
+        self.name = settings.bedrock_embedding_model
+        self._batch = settings.embedding_batch_size
+        kwargs = bedrock_client_kwargs(settings)
+        api_key = kwargs.pop("api_key", None)
+        if api_key is not None:  # BedrockEmbeddings has no api_key field; botocore reads this variable
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = api_key.get_secret_value()
+        extra: dict[str, object] = {}
+        if self.name.startswith("amazon.titan-embed-text-v2"):
+            extra = {"dimensions": settings.bedrock_embedding_dimensions, "normalize": True}
+        self._client = BedrockEmbeddings(model_id=self.name, **kwargs, **extra)
+
+
 def build_embedder(settings: Settings) -> Embedder:
     if settings.resolved_embedding_provider == "openai":
         return OpenAIEmbedder(settings)
+    if settings.resolved_embedding_provider == "bedrock":
+        return BedrockEmbedder(settings)
     return HashingEmbedder(settings.embedding_dimensions)
 
 

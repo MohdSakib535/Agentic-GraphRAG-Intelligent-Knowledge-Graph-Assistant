@@ -1,4 +1,4 @@
-"""A tiny OpenAI-compatible HTTP server used only by tests.
+"""A tiny OpenAI-compatible (and Amazon Bedrock-compatible) HTTP server used only by tests.
 
 It lets the real ``langchain-openai`` clients (``ChatOpenAI`` with JSON-schema
 structured output and token streaming, and ``OpenAIEmbeddings``) run end-to-end
@@ -13,13 +13,15 @@ import json
 import math
 import re
 import socket
+import struct
 import threading
 import time
+import zlib
 from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.agents.router import candidate_entities, choose_strategy
 from app.retrieval.query_parsing import expected_answer_type, relation_hints
@@ -93,6 +95,31 @@ def _grounded_answer(prompt: str) -> str:
     return f"{passage.group(2)} [{passage.group(1)}]" if passage else "INSUFFICIENT_EVIDENCE"
 
 
+def _event(event_type: str, payload: dict[str, Any]) -> bytes:
+    """One AWS event-stream message (the binary framing Bedrock ConverseStream uses)."""
+    headers = b""
+    for name, value in ((":event-type", event_type), (":content-type", "application/json"), (":message-type", "event")):
+        raw = value.encode()
+        headers += bytes([len(name)]) + name.encode() + bytes([7]) + struct.pack(">H", len(raw)) + raw
+    body = json.dumps(payload).encode()
+    total = 12 + len(headers) + len(body) + 4
+    prelude = struct.pack(">II", total, len(headers))
+    message = prelude + struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF) + headers + body
+    return message + struct.pack(">I", zlib.crc32(message) & 0xFFFFFFFF)
+
+
+def _bedrock_prompt(body: dict[str, Any]) -> str:
+    parts = [b.get("text", "") for b in body.get("system") or []]
+    for message in body.get("messages") or []:
+        parts += [b.get("text", "") for b in message.get("content") or [] if isinstance(b, dict)]
+    return "\n".join(parts)
+
+
+def _bedrock_schema(body: dict[str, Any]) -> str | None:
+    fmt = ((body.get("outputConfig") or {}).get("textFormat") or {})
+    return ((fmt.get("structure") or {}).get("jsonSchema") or {}).get("name")
+
+
 def create_stub_app(dims: int) -> FastAPI:
     app = FastAPI()
     app.state.requests = []
@@ -133,6 +160,50 @@ def create_stub_app(dims: int) -> FastAPI:
                              "choices": [{"index": 0, "finish_reason": "stop",
                                           "message": {"role": "assistant", "content": content}}]})
 
+    # ------------------------------------------------------------ Amazon Bedrock runtime
+    def _bedrock_record(request: Request, kind: str, model_id: str, body: dict[str, Any]) -> None:
+        app.state.requests.append({"kind": kind, "model": model_id, "schema": _bedrock_schema(body),
+                                   "authorization": request.headers.get("authorization", "").split(" ")[0],
+                                   "bearer": request.headers.get("authorization", "")[7:],
+                                   "inference": body.get("inferenceConfig") or {}, "tools": "toolConfig" in body})
+
+    @app.post("/model/{model_id}/converse")
+    async def converse(model_id: str, request: Request) -> JSONResponse:
+        body = await request.json()
+        _bedrock_record(request, "bedrock_chat", model_id, body)
+        prompt, schema = _bedrock_prompt(body), _bedrock_schema(body)
+        text = json.dumps(_structured(schema, prompt)) if schema else _grounded_answer(prompt)
+        usage = {"inputTokens": len(prompt) // 4, "outputTokens": len(text) // 4,
+                 "totalTokens": len(prompt) // 4 + len(text) // 4}
+        # A reasoning block first, as Claude 5.x returns - clients must read only the text block.
+        content = [{"reasoningContent": {"reasoningText": {"text": "", "signature": "sig"}}}, {"text": text}]
+        return JSONResponse({"output": {"message": {"role": "assistant", "content": content}},
+                             "stopReason": "end_turn", "usage": usage, "metrics": {"latencyMs": 1}})
+
+    @app.post("/model/{model_id}/converse-stream")
+    async def converse_stream(model_id: str, request: Request) -> Response:
+        body = await request.json()
+        _bedrock_record(request, "bedrock_stream", model_id, body)
+        prompt = _bedrock_prompt(body)
+        text = _grounded_answer(prompt)
+        frames = [_event("messageStart", {"role": "assistant"})]
+        frames += [_event("contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": token}})
+                   for token in re.findall(r"\S+\s*", text)]
+        frames += [_event("contentBlockStop", {"contentBlockIndex": 0}),
+                   _event("messageStop", {"stopReason": "end_turn"}),
+                   _event("metadata", {"usage": {"inputTokens": len(prompt) // 4, "outputTokens": len(text) // 4,
+                                                 "totalTokens": (len(prompt) + len(text)) // 4},
+                                       "metrics": {"latencyMs": 1}})]
+        return Response(b"".join(frames), media_type="application/vnd.amazon.eventstream")
+
+    @app.post("/model/{model_id}/invoke")
+    async def invoke(model_id: str, request: Request) -> JSONResponse:
+        body = await request.json()
+        _bedrock_record(request, "bedrock_embed", model_id, body)
+        app.state.requests[-1]["dimensions"] = body.get("dimensions")
+        return JSONResponse({"embedding": _embedding(body["inputText"], body.get("dimensions") or 1024),
+                             "inputTextTokenCount": 1})
+
     return app
 
 
@@ -148,6 +219,10 @@ class StubServer:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/v1"
+
+    @property
+    def bedrock_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
 
     def __enter__(self) -> StubServer:
         self.thread.start()

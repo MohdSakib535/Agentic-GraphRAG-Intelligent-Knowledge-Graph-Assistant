@@ -1,4 +1,4 @@
-"""OpenAI-compatible chat model wrapper.
+"""Provider-neutral chat model wrapper (OpenAI-compatible or Amazon Bedrock, chosen by configuration).
 
 * Structured output is requested via JSON schema and then **re-validated** with
   Pydantic - LLM JSON is never trusted blindly.
@@ -91,13 +91,69 @@ def _parse_structured(schema: type[TModel], raw: AIMessage | None, parsed: Any) 
         return schema.model_validate(parsed.model_dump())
     if isinstance(parsed, dict):
         return schema.model_validate(parsed)
-    if raw is not None and isinstance(raw.content, str) and raw.content.strip():
-        text = raw.content.strip()
+    text = message_text(raw).strip()
+    if text:
         if text.startswith("```"):
             text = text.strip("`")
             text = text[text.find("{") :]
         return schema.model_validate(json.loads(text))
     raise LLMOutputError("Structured output missing from model response")
+
+
+def message_text(message: Any) -> str:
+    """Plain text of a (chunk) message. Bedrock returns content blocks (e.g. reasoning + text), OpenAI a string."""
+    if message is None:
+        return ""
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content or []:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text") or ""))
+    return "".join(parts)
+
+
+def bedrock_client_kwargs(settings: Settings) -> dict[str, Any]:
+    """Shared Bedrock connection settings (region, endpoint, timeouts/retries, API key)."""
+    from botocore.config import Config
+
+    kwargs: dict[str, Any] = {
+        "region_name": settings.aws_region,
+        "config": Config(read_timeout=settings.llm_timeout_seconds, connect_timeout=10,
+                         retries={"max_attempts": settings.llm_max_retries + 1, "mode": "standard"}),
+    }
+    if settings.bedrock_endpoint_url:
+        kwargs["endpoint_url"] = settings.bedrock_endpoint_url
+    if settings.bedrock_api_key and settings.bedrock_api_key.get_secret_value():
+        # langchain-aws exports it as AWS_BEARER_TOKEN_BEDROCK, which botocore sends as a bearer token.
+        kwargs["api_key"] = settings.bedrock_api_key
+    return kwargs
+
+
+def build_chat_model(settings: Settings) -> Any:
+    if settings.resolved_llm_provider == "bedrock":
+        from langchain_aws import ChatBedrockConverse
+
+        extra: dict[str, Any] = {}
+        if settings.bedrock_temperature is not None:
+            extra["temperature"] = settings.bedrock_temperature
+        return ChatBedrockConverse(model=settings.bedrock_llm_model, max_tokens=settings.bedrock_max_tokens,
+                                   **bedrock_client_kwargs(settings), **extra)
+    from langchain_openai import ChatOpenAI
+
+    api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
+    return ChatOpenAI(
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        api_key=api_key,
+        base_url=settings.openai_base_url,
+        timeout=settings.llm_timeout_seconds,
+        max_retries=settings.llm_max_retries,
+        stream_usage=True,
+    )
 
 
 def _llm_failure(task: str, exc: Exception) -> AppError:
@@ -111,24 +167,12 @@ def _llm_failure(task: str, exc: Exception) -> AppError:
 
 
 class LLMClient:
-    """Thin, testable wrapper around an OpenAI-compatible LangChain chat model."""
+    """Thin, testable wrapper around a LangChain chat model (OpenAI-compatible or Bedrock)."""
 
     def __init__(self, settings: Settings, model: Any | None = None) -> None:
         self.settings = settings
-        if model is None:
-            from langchain_openai import ChatOpenAI
-
-            api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
-            model = ChatOpenAI(
-                model=settings.llm_model,
-                temperature=settings.llm_temperature,
-                api_key=api_key,
-                base_url=settings.openai_base_url,
-                timeout=settings.llm_timeout_seconds,
-                max_retries=settings.llm_max_retries,
-                stream_usage=True,
-            )
-        self.model = model
+        self.provider = settings.resolved_llm_provider
+        self.model = model if model is not None else build_chat_model(settings)
         self._semaphore: asyncio.Semaphore | None = None
 
     def _sem(self) -> asyncio.Semaphore:
@@ -137,6 +181,10 @@ class LLMClient:
         return self._semaphore
 
     def _structured_runnable(self, schema: type[BaseModel]) -> Any:
+        if self.provider == "bedrock":
+            # Native Bedrock structured output by default: newer Claude models reject forced tool choice.
+            return self.model.with_structured_output(schema, method=self.settings.bedrock_structured_output,
+                                                     include_raw=True)
         return self.model.with_structured_output(schema, method="json_schema", include_raw=True, strict=False)
 
     # ----------------------------------------------------------------- async
@@ -170,7 +218,7 @@ class LLMClient:
         except Exception as exc:
             raise _llm_failure(task, exc) from exc
         _record(task, message, started)
-        return str(message.content)
+        return message_text(message)
 
     async def astream_text(self, messages: list[BaseMessage], *, task: str) -> AsyncIterator[str]:
         started = time.perf_counter()
@@ -187,8 +235,9 @@ class LLMClient:
                 except Exception as exc:
                     raise _llm_failure(task, exc) from exc
                 final = chunk if final is None else final + chunk
-                if chunk.content:
-                    yield str(chunk.content)
+                text = message_text(chunk)
+                if text:
+                    yield text
         _record(task, final, started)
 
     # ------------------------------------------------------------------ sync
@@ -213,6 +262,6 @@ class LLMClient:
 
 def build_llm_client(settings: Settings) -> LLMClient | None:
     """Return an LLM client, or ``None`` when running with the heuristic provider."""
-    if settings.resolved_llm_provider != "openai":
+    if not settings.uses_llm:
         return None
     return LLMClient(settings)

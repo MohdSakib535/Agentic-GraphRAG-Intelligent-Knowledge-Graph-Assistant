@@ -180,7 +180,7 @@ class ChatService:
         if not settings.answer_cache_enabled or self.container.cache is None:
             return None
         normalized = " ".join(message.lower().split()).rstrip(" ?.!")
-        model = settings.llm_model if self.container.llm is not None else "heuristic"
+        model = f"{settings.resolved_llm_provider}:{settings.active_llm_model}"  # never share answers across providers
         return query_hash("answer-v1", RETRIEVAL_VERSION, scope.fingerprint, model, normalized)
 
     async def run_turn(self, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation: Conversation,

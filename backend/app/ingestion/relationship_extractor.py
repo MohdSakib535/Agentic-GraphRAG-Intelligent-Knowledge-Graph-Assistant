@@ -368,6 +368,6 @@ class LLMGraphExtractor:
 
 
 def build_graph_extractor(settings: Settings, llm: LLMClient | None) -> GraphExtractor:
-    if llm is not None and settings.resolved_llm_provider == "openai":
+    if llm is not None and settings.uses_llm:
         return LLMGraphExtractor(llm)
     return HeuristicGraphExtractor()

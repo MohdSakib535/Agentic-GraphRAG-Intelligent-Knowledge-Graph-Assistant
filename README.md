@@ -14,7 +14,7 @@ and abstains with *"I don't have enough information in the uploaded knowledge ba
 | | |
 |---|---|
 | **Backend** | Python 3.11, FastAPI, Pydantic v2, SQLAlchemy 2 + Alembic, Celery |
-| **GenAI** | LangGraph (agent + Postgres checkpointing), LangChain, OpenAI-compatible LLM & embeddings |
+| **GenAI** | LangGraph (agent + Postgres checkpointing), LangChain; OpenAI-compatible **or Amazon Bedrock** LLM & embeddings (one switch) |
 | **Data** | Neo4j 5 (knowledge graph, HNSW vector index, full-text index), PostgreSQL 16, Redis 7 |
 | **Frontend** | Streamlit (no React) talking only to the FastAPI API |
 | **Analytics** | Chat with CSV: DuckDB, AST-validated read-only SQL in a sandbox |
@@ -52,6 +52,22 @@ provider: rule-based entity/relationship extraction, graph-grounded routing, ext
 feature-hashing embeddings. Every component — ingestion, graph, vector index, agent, verification, evaluation — runs
 for real; set a key (or any OpenAI-compatible `OPENAI_BASE_URL`, e.g. vLLM/Ollama/Azure gateway) to switch the
 reasoning steps to the LLM.
+
+**Switch between OpenAI and Amazon Bedrock with one setting.** Configure both credentials in `.env`, then
+choose the provider with `USE_BEDROCK`:
+
+| `USE_BEDROCK` | `OPENAI_API_KEY` | LLM | Embeddings |
+|---|---|---|---|
+| `false` | set | OpenAI `LLM_MODEL` | OpenAI `EMBEDDING_MODEL` (1536 dims) |
+| `true` | ignored | Bedrock `BEDROCK_LLM_MODEL` (default `anthropic.claude-opus-5-5`) | Bedrock `BEDROCK_EMBEDDING_MODEL` (Titan v2, 1024 dims) |
+| `false` | empty | offline heuristic | feature hashing |
+
+Bedrock authenticates with `BEDROCK_API_KEY` (a Bedrock API key), or with standard AWS credentials (access keys,
+profile or IAM role) when that is empty. Set `AWS_REGION` to a region where the models are enabled. Switching
+providers changes the embedding size. An empty index is rebuilt automatically at startup; if documents are already
+indexed, run **`make reindex`** once. It re-embeds every chunk with the new provider (no re-extraction, no
+LLM calls). `LLM_PROVIDER` / `EMBEDDING_PROVIDER` can still pin each side separately (e.g. Bedrock LLM + OpenAI
+embeddings).
 
 Behind a TLS-intercepting corporate proxy, pass its CA to the image build (mounted only during `pip install`, never
 stored in a layer): `BUILD_CA_FILE=/path/to/ca.pem docker compose build`.
@@ -231,7 +247,14 @@ All configuration is environment-based (`backend/app/core/config.py`); secrets a
 |---|---|---|
 | `OPENAI_API_KEY` | – | Enables the OpenAI-compatible provider (`LLM_PROVIDER=auto`) |
 | `OPENAI_BASE_URL` | – | Any OpenAI-compatible endpoint (vLLM, Ollama, Azure gateway, …) |
-| `LLM_PROVIDER` / `EMBEDDING_PROVIDER` | `auto` | `openai` \| `heuristic` / `openai` \| `hashing` |
+| `LLM_PROVIDER` / `EMBEDDING_PROVIDER` | `auto` | `openai` \| `bedrock` \| `heuristic` / `openai` \| `bedrock` \| `hashing` (`auto` follows `USE_BEDROCK`, then `OPENAI_API_KEY`) |
+| `USE_BEDROCK` | `false` | `true` = the whole app (LLM + embeddings) runs on Amazon Bedrock |
+| `BEDROCK_API_KEY` | – | Bedrock API key; empty = AWS credential chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, profile, IAM role) |
+| `AWS_REGION` / `BEDROCK_ENDPOINT_URL` | `us-east-1` / – | Bedrock region · optional VPC endpoint |
+| `BEDROCK_LLM_MODEL` / `BEDROCK_MAX_TOKENS` | `anthropic.claude-opus-5-5` / `16000` | Any Converse model or inference profile |
+| `BEDROCK_TEMPERATURE` | – | Leave unset for Claude 5.x (sampling parameters are rejected) |
+| `BEDROCK_STRUCTURED_OUTPUT` | `json_schema` | Native structured output; `function_calling` for models without it |
+| `BEDROCK_EMBEDDING_MODEL` / `BEDROCK_EMBEDDING_DIMENSIONS` | `amazon.titan-embed-text-v2:0` / `1024` | Replaces `EMBEDDING_DIMENSIONS` when Bedrock embeds |
 | `LLM_MODEL` / `EMBEDDING_MODEL` | `gpt-4o-mini` / `text-embedding-3-small` | Models |
 | `EMBEDDING_DIMENSIONS` | `1536` | Must match the embedding model (vector index dimension) |
 | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | | PostgreSQL |
@@ -634,8 +657,9 @@ The design targets 10k+ users, millions of chunks and high chat concurrency:
 
 * **Offline provider**: rule-based extraction recognises common enterprise phrasings and a technology gazetteer; it is
   far less general than LLM extraction, and hashing embeddings are lexical rather than semantic. Use an LLM for real data.
-* The LLM path is verified end-to-end against an OpenAI-compatible stub, not against a live hosted model in this
-  repository's CI (no key available); prompt quality with specific models should be evaluated on your data.
+* The LLM paths are verified end-to-end against local stubs (OpenAI-compatible, and Bedrock Converse /
+  ConverseStream / InvokeModel driven through the real `langchain-aws` + `botocore` clients), not against live
+  hosted models in this repository's CI (no keys available); evaluate prompt quality with your models and data.
 * Evaluation results above are in-sample (see [Evaluation](#evaluation)); the offline provider scores keyword-based
   correctness (the LLM judge needs an LLM).
 * Deleted entities/relationships come back if a document that states them is re-processed (renames, merges and manual

@@ -39,10 +39,14 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:8501"])
 
     # ------------------------------------------------------------------ LLM
-    # "auto" selects "openai" when an API key is configured, otherwise the
-    # deterministic offline "heuristic" provider (rule-based extraction,
-    # routing, grading and extractive answers).
-    llm_provider: Literal["auto", "openai", "heuristic"] = "auto"
+    # Provider selection ("auto"):
+    #   USE_BEDROCK=true      -> Amazon Bedrock for the LLM *and* embeddings (BEDROCK_API_KEY or AWS credentials)
+    #   else OPENAI_API_KEY   -> OpenAI (or any OpenAI-compatible endpoint)
+    #   else                  -> the deterministic offline "heuristic" provider (rule-based extraction,
+    #                            routing, grading and extractive answers) with hashing embeddings.
+    # LLM_PROVIDER / EMBEDDING_PROVIDER can still pin a provider explicitly.
+    llm_provider: Literal["auto", "openai", "bedrock", "heuristic"] = "auto"
+    use_bedrock: bool = False
     openai_api_key: SecretStr | None = None
     openai_base_url: str | None = None
     llm_model: str = "gpt-4o-mini"
@@ -51,10 +55,27 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     llm_max_concurrency: int = 4
 
-    embedding_provider: Literal["auto", "openai", "hashing"] = "auto"
+    embedding_provider: Literal["auto", "openai", "bedrock", "hashing"] = "auto"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
     embedding_batch_size: int = 64
+
+    # --------------------------------------------------------- Amazon Bedrock
+    # Credentials: BEDROCK_API_KEY (a Bedrock API key), or the standard AWS chain (AWS_ACCESS_KEY_ID /
+    # AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN, AWS_PROFILE, or an IAM role) when it is empty.
+    bedrock_api_key: SecretStr | None = None
+    aws_region: str = "us-east-1"
+    bedrock_endpoint_url: str | None = None  # VPC endpoint / proxy; normally unset
+    # Any Bedrock Converse model id or inference-profile id/ARN (e.g. "us.<model-id>" for cross-region profiles).
+    bedrock_llm_model: str = "anthropic.claude-opus-5-5"
+    bedrock_max_tokens: int = 16000
+    # None = provider default. Claude 5.x models reject sampling parameters, so leave unset for them.
+    bedrock_temperature: float | None = None
+    # "json_schema" = Bedrock native structured output; "function_calling" = forced tool call (older models).
+    bedrock_structured_output: Literal["json_schema", "function_calling"] = "json_schema"
+    bedrock_embedding_model: str = "amazon.titan-embed-text-v2:0"
+    # Titan Text Embeddings v2 supports 256 / 512 / 1024. Replaces EMBEDDING_DIMENSIONS when Bedrock embeds.
+    bedrock_embedding_dimensions: int = 1024
 
     # ------------------------------------------------------------- Postgres
     postgres_host: str = "localhost"
@@ -183,6 +204,13 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _apply_bedrock_dimensions(self) -> Settings:
+        # The Neo4j vector index and every dimension check read EMBEDDING_DIMENSIONS; keep it in sync.
+        if self.resolved_embedding_provider == "bedrock":
+            self.embedding_dimensions = self.bedrock_embedding_dimensions
+        return self
+
+    @model_validator(mode="after")
     def _validate_security(self) -> Settings:
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
@@ -211,16 +239,42 @@ class Settings(BaseSettings):
         return self.database_url.replace("postgresql+psycopg://", "postgresql://")
 
     @property
-    def resolved_llm_provider(self) -> Literal["openai", "heuristic"]:
+    def has_openai_key(self) -> bool:
+        return bool(self.openai_api_key and self.openai_api_key.get_secret_value())
+
+    @property
+    def resolved_llm_provider(self) -> Literal["openai", "bedrock", "heuristic"]:
         if self.llm_provider == "auto":
-            return "openai" if self.openai_api_key and self.openai_api_key.get_secret_value() else "heuristic"
+            if self.use_bedrock:
+                return "bedrock"
+            return "openai" if self.has_openai_key else "heuristic"
         return self.llm_provider
 
     @property
-    def resolved_embedding_provider(self) -> Literal["openai", "hashing"]:
+    def resolved_embedding_provider(self) -> Literal["openai", "bedrock", "hashing"]:
         if self.embedding_provider == "auto":
-            return "openai" if self.openai_api_key and self.openai_api_key.get_secret_value() else "hashing"
+            if self.use_bedrock:
+                return "bedrock"
+            return "openai" if self.has_openai_key else "hashing"
         return self.embedding_provider
+
+    @property
+    def uses_llm(self) -> bool:
+        return self.resolved_llm_provider != "heuristic"
+
+    @property
+    def uses_semantic_embeddings(self) -> bool:
+        return self.resolved_embedding_provider != "hashing"
+
+    @property
+    def active_llm_model(self) -> str:
+        return {"openai": self.llm_model, "bedrock": self.bedrock_llm_model}.get(self.resolved_llm_provider,
+                                                                                "heuristic-local")
+
+    @property
+    def active_embedding_model(self) -> str:
+        return {"openai": self.embedding_model, "bedrock": self.bedrock_embedding_model}.get(
+            self.resolved_embedding_provider, "feature-hashing")
 
     @property
     def broker_url(self) -> str:
@@ -244,11 +298,12 @@ class Settings(BaseSettings):
             "app_name": self.app_name,
             "environment": self.environment,
             "llm_provider": self.resolved_llm_provider,
-            "llm_model": self.llm_model if self.resolved_llm_provider == "openai" else "heuristic-local",
+            "llm_model": self.active_llm_model,
             "embedding_provider": self.resolved_embedding_provider,
-            "embedding_model": (
-                self.embedding_model if self.resolved_embedding_provider == "openai" else "feature-hashing"
-            ),
+            "embedding_model": self.active_embedding_model,
+            "use_bedrock": self.use_bedrock,
+            "aws_region": self.aws_region if "bedrock" in (self.resolved_llm_provider,
+                                                           self.resolved_embedding_provider) else None,
             "embedding_dimensions": self.embedding_dimensions,
             "top_k": self.top_k,
             "chunk_size": self.chunk_size,
