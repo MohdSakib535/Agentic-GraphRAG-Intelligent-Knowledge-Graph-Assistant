@@ -15,10 +15,13 @@ from app.core.access import AccessScope
 from app.core.container import Container
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger, request_id_ctx
+from app.core.metrics import record_cache, record_chat_turn
 from app.db.postgres import utcnow
+from app.db.redis import query_hash
 from app.llm.client import start_usage_tracking
 from app.models.conversation import Conversation
 from app.models.message import Message
+from app.retrieval.retriever import RETRIEVAL_VERSION
 from app.utils.text import truncate
 
 logger = get_logger(__name__)
@@ -77,11 +80,13 @@ class ChatService:
     # ----------------------------------------------------------------- run
     async def stream_turn(self, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation: Conversation,
                           message: str, scope: AccessScope) -> AsyncIterator[dict[str, Any]]:
-        """Run the agent, yielding SSE-style events; the final event is ``completed``."""
+        """Run the agent (or serve a cached answer), yielding SSE-style events; the final event is ``completed``."""
         started = time.perf_counter()
         usage = start_usage_tracking()
         request_id = request_id_ctx.get() or uuid.uuid4().hex
         tid = str(tenant_id)
+        first_turn = not (await self.db.execute(
+            select(Message.id).where(Message.conversation_id == conversation.id).limit(1))).first()
         user_msg = Message(tenant_id=tenant_id, conversation_id=conversation.id, role="user", content=message)
         self.db.add(user_msg)
         await self.db.commit()
@@ -94,26 +99,51 @@ class ChatService:
         }
         state: dict[str, Any] = {}
         captured: dict[str, Any] = {}
+        memory: dict[str, Any] = {}
+        digest = self._answer_cache_digest(message, scope) if first_turn else None
+        cached = await self.container.cache.get(tid, "answer", digest) if digest and self.container.cache else None
+        if digest:
+            record_cache("answer", hit=bool(cached))
         yield {"event": "agent_started", "data": {"conversation_id": str(conversation.id), "request_id": request_id}}
-        async for mode, chunk in self.container.agent.astream(
-            initial_turn_state(message, tid, str(conversation.id), request_id),
-            config=config,
-            stream_mode=["updates", "custom"],
-            durability="exit",
-        ):
-            if mode == "custom":
-                yield chunk
-                continue
-            for node, update in (chunk or {}).items():
-                if not isinstance(update, dict):
-                    continue
-                state.update(update)
-                if node in {"vector_search", "graph_search", "hybrid_search"}:
-                    for key in _CAPTURE:  # a retry replaces the previous attempt's evidence
-                        captured[key] = update.get(key)
 
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        response = self._build_response(state, captured, latency_ms, usage.as_dict())
+        if cached:
+            # Restore agent memory so follow-up questions ("that project") still resolve.
+            await self.container.agent.aupdate_state(config, cached["memory"], as_node="finalize")
+            yield {"event": "reasoning", "data": {"message": "Answer served from cache (same question, same permissions, "
+                                                             "unchanged knowledge base)"}}
+            for src in cached["response"].get("sources") or []:
+                yield {"event": "citation", "data": src}
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            response = {**cached["response"], "cached": True, "latency_ms": latency_ms, "token_usage": usage.as_dict(),
+                        "trace": [{"step": "answer_cache", "status": "done", "detail": {"hit": True},
+                                   "latency_ms": latency_ms}]}
+        else:
+            async for mode, chunk in self.container.agent.astream(
+                initial_turn_state(message, tid, str(conversation.id), request_id),
+                config=config,
+                stream_mode=["updates", "custom"],
+                durability="exit",
+            ):
+                if mode == "custom":
+                    yield chunk
+                    continue
+                for node, update in (chunk or {}).items():
+                    if not isinstance(update, dict):
+                        continue
+                    if node == "finalize":
+                        memory = {k: update[k] for k in ("history", "focus_entities") if k in update}
+                        update = {k: v for k, v in update.items() if k == "trace"}
+                    state.update(update)
+                    if node in {"vector_search", "graph_search", "hybrid_search"}:
+                        for key in _CAPTURE:  # a retry replaces the previous attempt's evidence
+                            captured[key] = update.get(key)
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            response = self._build_response(state, captured, latency_ms, usage.as_dict())
+            if digest and self.container.cache and response["answer"] and not captured.get("retrieval_errors"):
+                await self.container.cache.set_with_ttl(
+                    tid, "answer", digest, {"response": response, "memory": memory},
+                    self.container.settings.answer_cache_ttl_seconds)
+
         assistant = Message(
             tenant_id=tenant_id, conversation_id=conversation.id, role="assistant", content=response["answer"],
             retrieval_strategy=response["retrieval_strategy"], confidence=response["confidence"], latency_ms=latency_ms,
@@ -122,7 +152,7 @@ class ChatService:
                    "graph_evidence": response["graph_evidence"][:30],
                    "retrieved_chunks": [{k: v for k, v in c.items() if k != "text"} | {"text": truncate(c.get("text", ""), 400)}
                                         for c in response["retrieved_chunks"][:10]],
-                   "intent": response["intent"], "entities": response["entities"],
+                   "intent": response["intent"], "entities": response["entities"], "cached": bool(cached),
                    "rewritten_query": response["rewritten_query"], "token_usage": response["token_usage"]},
         )
         self.db.add(assistant)
@@ -130,6 +160,9 @@ class ChatService:
         await self.db.commit()
         response["conversation_id"] = str(conversation.id)
         response["message_id"] = str(assistant.id)
+        record_chat_turn(response["retrieval_strategy"], "cache_hit" if cached else (
+            "insufficient" if not response["sources"] else "answered"), latency_ms / 1000, response["retry_count"],
+            usage.as_dict())
         logger.info(
             "chat_turn_completed",
             extra={
@@ -137,10 +170,18 @@ class ChatService:
                 "selected_strategy": response["retrieval_strategy"], "tools_called": state.get("tools_called", []),
                 "retrieval_latency": state.get("retrieval_latency_ms", 0), "llm_latency": usage.as_dict()["llm_latency_ms"],
                 "total_latency": latency_ms, "token_usage": usage.total_tokens, "retry_count": response["retry_count"],
-                "confidence": response["confidence"],
+                "confidence": response["confidence"], "answer_cache_hit": bool(cached),
             },
         )
         yield {"event": "completed", "data": response}
+
+    def _answer_cache_digest(self, message: str, scope: AccessScope) -> str | None:
+        settings = self.container.settings
+        if not settings.answer_cache_enabled or self.container.cache is None:
+            return None
+        normalized = " ".join(message.lower().split()).rstrip(" ?.!")
+        model = settings.llm_model if self.container.llm is not None else "heuristic"
+        return query_hash("answer-v1", RETRIEVAL_VERSION, scope.fingerprint, model, normalized)
 
     async def run_turn(self, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation: Conversation,
                        message: str, scope: AccessScope) -> dict[str, Any]:
@@ -174,4 +215,5 @@ class ChatService:
             "verification": state.get("verification") or {},
             "latency_ms": latency_ms,
             "token_usage": usage,
+            "cached": False,
         }

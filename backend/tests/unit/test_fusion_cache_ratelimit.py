@@ -123,3 +123,25 @@ async def test_rate_limiter_blocks_after_limit() -> None:
         await limiter.hit("chat:user:1", limit=3, window_seconds=60)
     assert exc.value.retry_after >= 1
     await limiter.hit("chat:user:2", limit=3, window_seconds=60)  # other identities unaffected
+
+
+async def test_query_embedding_cache_is_tenant_scoped() -> None:
+    from app.core.config import Settings
+    from app.ingestion.embedding import HashingEmbedder
+    from app.retrieval.vector import VectorRetriever
+
+    class CountingEmbedder(HashingEmbedder):
+        calls = 0
+
+        async def aembed_query(self, text: str) -> list[float]:
+            CountingEmbedder.calls += 1
+            return await super().aembed_query(text)
+
+    redis = FakeRedis()
+    retriever = VectorRetriever(None, CountingEmbedder(64), Settings(), TenantCache(redis, 60))  # type: ignore[arg-type]
+    first = await retriever.embed_query("What is  Kafka?", "tenant-a")
+    again = await retriever.embed_query("What is Kafka?", "tenant-a")  # whitespace-normalised hit
+    assert CountingEmbedder.calls == 1 and again == pytest.approx(first, abs=1e-6)
+    await retriever.embed_query("What is Kafka?", "tenant-b")  # other tenant never shares the entry
+    assert CountingEmbedder.calls == 2
+    assert all(k.startswith(("tenant:tenant-a:static:embedding:", "tenant:tenant-b:static:embedding:")) for k in redis.data)

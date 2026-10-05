@@ -70,7 +70,9 @@ def heuristic_grade(state: dict[str, Any]) -> tuple[float, dict[str, Any]]:
     all_evidence = term_set(" ".join(c.get("text", "") for c in chunks) + " " + fact_text)
     info_cov = len(info & all_evidence) / len(info) if info else None
     if info_cov is not None and info_cov < 0.34:
-        grade = min(grade, 0.3)
+        # Hard gate, deliberately below the LLM-grader band: evidence that never mentions what is being
+        # asked ("budget", "salary") cannot be talked into sufficiency by a second opinion.
+        grade = min(grade, AMBIGUOUS_BAND[0] - 0.05)
     detail = {
         "term_coverage": round(term_cov, 3), "entity_coverage": None if entity_cov is None else round(entity_cov, 3),
         "top_score": round(top_score, 3), "graph_signal": graph_signal, "relevant_facts": len(rel_facts),

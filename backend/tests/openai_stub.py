@@ -60,6 +60,8 @@ def _structured(schema_name: str, prompt: str) -> dict[str, Any]:
     if schema_name == "_GeneratedCypher":
         return {"cypher": "MATCH (p:Person)-[:MANAGES]->(x:Project) RETURN p.name AS person, x.name AS project",
                 "explanation": "stub"}
+    if schema_name == "JudgeVerdict":
+        return {"correctness": 0.8, "faithfulness": 0.9, "reasoning": "stub judge"}
     if schema_name == "_SameEntity":
         return {"same_entity": False, "reason": "stub"}
     if schema_name == "_RawExtraction":

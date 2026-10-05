@@ -255,3 +255,24 @@ def test_document_level_permissions(client) -> None:
     assert client.patch(f"{API}/auth/users/{member_id}", headers=auth(admin),
                         json={"groups": ["engineering", "hr"]}).json()["groups"] == ["engineering", "hr"]
     assert chat(client, member, "Who reports to Rahul?")["answer"].startswith("Amit")
+
+
+def test_answer_cache_respects_memory_and_permissions(client) -> None:
+    admin = register(client, "Cache Corp")
+    for name in ("project-overview.docx", "architecture.pdf"):
+        client.post(f"{API}/documents/upload", headers=auth(admin), files={"file": (name, (SAMPLES / name).read_bytes())})
+    first = chat(client, admin, "Which projects use Kafka?")
+    second = chat(client, admin, "which projects use kafka")  # normalised question, new conversation
+    assert first["cached"] is False and second["cached"] is True and second["answer"] == first["answer"]
+    follow = chat(client, admin, "Who manages that project?", second["conversation_id"])  # memory restored
+    assert follow["cached"] is False and "Rahul" in follow["answer"]
+    # A user with a different permission scope never receives the cached answer.
+    email = f"m-{uuid.uuid4().hex[:8]}@example.com"
+    client.post(f"{API}/auth/users", headers=auth(admin), json={"email": email, "password": PASSWORD})
+    docs = client.get(f"{API}/documents", headers=auth(admin)).json()["items"]
+    pdf = next(d for d in docs if d["filename"] == "architecture.pdf")
+    client.put(f"{API}/documents/{pdf['id']}/access", headers=auth(admin), json={"access_groups": ["arch"]})
+    member = client.post(f"{API}/auth/login", json={"email": email, "password": PASSWORD}).json()
+    restricted = chat(client, member, "Which projects use Kafka?")
+    assert restricted["cached"] is False and "Project Alpha" in restricted["answer"]
+    assert restricted["sources"] and all(s["source_filename"] != "architecture.pdf" for s in restricted["sources"])

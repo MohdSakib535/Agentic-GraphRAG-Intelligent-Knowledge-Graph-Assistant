@@ -109,6 +109,34 @@ class TenantCache:
             logger.warning("cache_invalidate_failed", extra={"error": type(exc).__name__})
 
 
+    # ---- unversioned entries (content that does not depend on the knowledge base, e.g. query embeddings)
+    async def get_static(self, tenant_id: str, namespace: str, digest: str) -> str | None:
+        if self._client is None:
+            return None
+        try:
+            return await self._client.get(f"tenant:{tenant_id}:static:{namespace}:{digest}")
+        except RedisError as exc:
+            logger.warning("cache_get_failed", extra={"error": type(exc).__name__})
+            return None
+
+    async def set_static(self, tenant_id: str, namespace: str, digest: str, value: str, ttl: int) -> None:
+        if self._client is None:
+            return
+        try:
+            await self._client.set(f"tenant:{tenant_id}:static:{namespace}:{digest}", value, ex=ttl)
+        except RedisError as exc:
+            logger.warning("cache_set_failed", extra={"error": type(exc).__name__})
+
+    async def set_with_ttl(self, tenant_id: str, namespace: str, digest: str, value: Any, ttl: int) -> None:
+        if self._client is None:
+            return
+        try:
+            key = await self.key(tenant_id, namespace, digest)
+            await self._client.set(key, json.dumps(value, default=str), ex=ttl)
+        except RedisError as exc:
+            logger.warning("cache_set_failed", extra={"error": type(exc).__name__})
+
+
 def invalidate_tenant_cache_sync(redis_url: str, tenant_id: str) -> None:
     """Synchronous invalidation used from Celery workers."""
     import redis as sync_redis

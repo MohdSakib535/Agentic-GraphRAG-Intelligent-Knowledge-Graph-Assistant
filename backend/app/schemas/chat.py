@@ -53,6 +53,7 @@ class ChatResponse(BaseModel):
     verification: dict[str, Any] = Field(default_factory=dict)
     latency_ms: int
     token_usage: dict[str, int] = Field(default_factory=dict)
+    cached: bool = False
 
 
 class ConversationOut(ORMModel):

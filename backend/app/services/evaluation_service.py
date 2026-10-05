@@ -19,6 +19,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.agents.nodes.common import Evidence, build_evidence, heuristic_answer, heuristic_verify, verbalize
@@ -26,6 +27,7 @@ from app.agents.state import INSUFFICIENT_EVIDENCE_ANSWER
 from app.core.access import UNRESTRICTED, AccessScope, compute_scope, use_scope
 from app.core.config import Settings, get_settings
 from app.core.container import Container, build_container
+from app.core.errors import AppError
 from app.core.logging import get_logger
 from app.db.postgres import utcnow
 from app.llm.client import start_usage_tracking
@@ -156,17 +158,55 @@ async def evaluate_question(container: Container, system: str, item: dict[str, A
             with use_scope(scope):
                 out = await _baseline(container, system, item, tenant_id)
     except Exception as exc:
-        logger.warning("evaluation_question_failed", extra={"system": system, "qid": item["id"], "error": type(exc).__name__})
+        logger.warning("evaluation_question_failed", exc_info=True, extra={"system": system, "qid": item["id"], "error": type(exc).__name__})
         out = {"answer": INSUFFICIENT_EVIDENCE_ANSWER, "strategy": None, "context": [], "faithfulness": 0.0,
                "error": type(exc).__name__}
     latency = int((time.perf_counter() - started) * 1000)
+    tokens = usage.total_tokens  # judge tokens are not attributed to the system under test
     scores = score_answer(item, out["answer"], out["context"], out["faithfulness"])
+    details: dict[str, Any] = {"error": out.get("error"), "context_items": len(out["context"]), "judge": "keyword",
+                               "keyword_correctness": scores["correctness"]}
+    if container.llm is not None and container.settings.eval_llm_judge and item["category"] != "unanswerable" \
+            and out["answer"] != INSUFFICIENT_EVIDENCE_ANSWER:
+        verdict = await llm_judge(container, item, out["answer"], out["context"])
+        if verdict is not None:
+            scores["correctness"] = round(verdict.correctness, 3)
+            scores["faithfulness"] = round(verdict.faithfulness, 3)
+            details.update(judge="llm", judge_reasoning=verdict.reasoning[:500])
     return {
         "system": system, "question_id": item["id"], "category": item["category"], "question": item["question"],
         "answer": out["answer"], "expected_strategy": item.get("expected_strategy"), "selected_strategy": out["strategy"],
-        "latency_ms": latency, "token_usage": usage.total_tokens, **scores,
-        "details": {"error": out.get("error"), "context_items": len(out["context"])},
+        "latency_ms": latency, "token_usage": tokens, **scores, "details": details,
     }
+
+
+class JudgeVerdict(BaseModel):
+    correctness: float = Field(ge=0.0, le=1.0, description="How completely and correctly the answer addresses the question")
+    faithfulness: float = Field(ge=0.0, le=1.0, description="Share of the answer's claims supported by the context")
+    reasoning: str = Field(default="", max_length=1000)
+
+
+_JUDGE_SYSTEM = """You are a strict evaluator of a retrieval-augmented question-answering system.
+Score two things between 0 and 1:
+- correctness: does the answer correctly and completely answer the question? The reference facts list what a
+  correct answer must contain; paraphrases count, missing or wrong facts lower the score.
+- faithfulness: what fraction of the answer's factual claims are supported by the retrieved context?
+Ignore citation markers like [1]. Be concise in your reasoning."""
+
+
+async def llm_judge(container: Container, item: dict[str, Any], answer: str, context: list[str]) -> JudgeVerdict | None:
+    """LLM-as-judge scoring; returns None (keyword scoring is kept) if the judge call fails."""
+    from app.llm.client import to_messages
+
+    reference = ", ".join(item.get("expected_keywords") or []) or "(none given)"
+    ctx = "\n".join(f"- {c[:600]}" for c in context[:10]) or "(no context retrieved)"
+    prompt = (f"Question: {item['question']}\nReference facts: {reference}\n\nRetrieved context:\n{ctx}\n\n"
+              f"Answer to evaluate:\n{answer}")
+    try:
+        return await container.llm.astructured(JudgeVerdict, to_messages(_JUDGE_SYSTEM, prompt), task="eval_judge")  # type: ignore[union-attr]
+    except AppError as exc:
+        logger.warning("llm_judge_failed", extra={"error": exc.code})
+        return None
 
 
 def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -182,6 +222,7 @@ def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
             "retrieval_recall": round(mean(r["retrieval_recall"] for r in rows), 3),
             "avg_latency_ms": int(mean(r["latency_ms"] for r in rows)),
             "avg_token_usage": int(mean(r["token_usage"] for r in rows)),
+            "judge": "llm" if any((r.get("details") or {}).get("judge") == "llm" for r in rows) else "keyword",
             "routing_accuracy": (
                 round(mean(1.0 if r["selected_strategy"] == r["expected_strategy"] else 0.0 for r in routed), 3)
                 if system == "agentic_graphrag" and routed else None

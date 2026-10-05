@@ -68,7 +68,7 @@ def build_container(
     llm = llm if llm is not None else build_llm_client(settings)
     cache = TenantCache(redis_client, settings.cache_ttl_seconds) if redis_client is not None else None
     text2cypher = Text2Cypher(llm, reader) if (llm is not None and settings.enable_text2cypher) else None
-    vector = VectorRetriever(reader, embedder, settings)
+    vector = VectorRetriever(reader, embedder, settings, cache)
     graph = GraphRetriever(reader, settings, text2cypher)
     hybrid = HybridRetriever(vector, graph, reader, settings)
     retrieval = RetrievalService(settings, reader, vector, graph, hybrid, build_reranker(settings), cache)

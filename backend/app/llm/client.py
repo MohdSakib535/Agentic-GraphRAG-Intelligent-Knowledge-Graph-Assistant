@@ -21,7 +21,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings
-from app.core.errors import LLMOutputError, LLMTimeoutError
+from app.core.errors import AppError, LLMOutputError, LLMTimeoutError, LLMUnavailable
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -100,6 +100,16 @@ def _parse_structured(schema: type[TModel], raw: AIMessage | None, parsed: Any) 
     raise LLMOutputError("Structured output missing from model response")
 
 
+def _llm_failure(task: str, exc: Exception) -> AppError:
+    """Map any provider/client exception to a typed error that agent nodes handle with a fallback."""
+    if isinstance(exc, AppError):
+        return exc
+    logger.warning("llm_call_failed", extra={"task": task, "error": type(exc).__name__})
+    if isinstance(exc, (ValidationError, json.JSONDecodeError, ValueError)):
+        return LLMOutputError()
+    return LLMUnavailable()
+
+
 class LLMClient:
     """Thin, testable wrapper around an OpenAI-compatible LangChain chat model."""
 
@@ -139,6 +149,8 @@ class LLMClient:
         except TimeoutError as exc:
             logger.warning("llm_timeout", extra={"task": task})
             raise LLMTimeoutError() from exc
+        except Exception as exc:  # provider/API/parsing failures must degrade gracefully, never crash a turn
+            raise _llm_failure(task, exc) from exc
         raw = result.get("raw") if isinstance(result, dict) else None
         _record(task, raw, started)
         try:
@@ -155,6 +167,8 @@ class LLMClient:
                 message = await asyncio.wait_for(self.model.ainvoke(messages), self.settings.llm_timeout_seconds)
         except TimeoutError as exc:
             raise LLMTimeoutError() from exc
+        except Exception as exc:
+            raise _llm_failure(task, exc) from exc
         _record(task, message, started)
         return str(message.content)
 
@@ -170,6 +184,8 @@ class LLMClient:
                     break
                 except TimeoutError as exc:
                     raise LLMTimeoutError() from exc
+                except Exception as exc:
+                    raise _llm_failure(task, exc) from exc
                 final = chunk if final is None else final + chunk
                 if chunk.content:
                     yield str(chunk.content)
@@ -183,6 +199,8 @@ class LLMClient:
             result = runnable.invoke(messages)
         except TimeoutError as exc:
             raise LLMTimeoutError() from exc
+        except Exception as exc:
+            raise _llm_failure(task, exc) from exc
         raw = result.get("raw") if isinstance(result, dict) else None
         _record(task, raw, started)
         try:

@@ -84,3 +84,55 @@ async def test_agent_runs_on_openai_compatible_llm(llm_settings, sample_graph, s
     schemas = {r["schema"] for r in stub.app.state.requests if r["kind"] == "chat"}
     assert {"QueryAnalysis", "LLMVerification", None} <= schemas  # analysis, verification, streamed generation
     assert usage.total_tokens > 0 and usage.calls >= 3  # token usage is tracked from API usage metadata
+
+
+async def test_llm_judge_scores_evaluation(llm_settings, sample_graph, stub) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from app.core.container import build_container
+    from app.ingestion.embedding import HashingEmbedder
+    from app.services.evaluation_service import evaluate_question
+
+    container = build_container(llm_settings, None, None, checkpointer=InMemorySaver(), reader=sample_graph,
+                                embedder=HashingEmbedder(256))
+    item = {"id": "Q1", "category": "graph_relationship", "question": "Who manages Project Alpha?",
+            "expected_keywords": ["Rahul"], "expected_strategy": "GRAPH"}
+    result = await evaluate_question(container, "agentic_graphrag", item, TENANT_A)
+    assert result["details"]["judge"] == "llm" and result["correctness"] == 0.8 and result["faithfulness"] == 0.9
+    assert result["details"]["keyword_correctness"] == 1.0
+    unanswerable = {"id": "Q2", "category": "unanswerable", "question": "What is the budget of Project Beta?",
+                    "expected_keywords": []}
+    abstained = await evaluate_question(container, "agentic_graphrag", unanswerable, TENANT_A)
+    assert abstained["details"]["judge"] == "keyword" and abstained["correctness"] == 1.0  # abstention scored exactly
+
+
+async def test_llm_client_maps_provider_failures_to_typed_errors(test_settings) -> None:
+    """Regression: a validation error raised inside the provider client must not crash an agent turn."""
+    from pydantic import BaseModel as _BM
+
+    from app.core.errors import LLMOutputError, LLMUnavailable
+
+    class _Schema(_BM):
+        value: str
+
+    class _Runnable:
+        def __init__(self, exc: Exception) -> None:
+            self.exc = exc
+
+        async def ainvoke(self, messages):  # noqa: ANN001
+            raise self.exc
+
+        def invoke(self, messages):  # noqa: ANN001
+            raise self.exc
+
+    class _Model:
+        def __init__(self, exc: Exception) -> None:
+            self.exc = exc
+
+        def with_structured_output(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return _Runnable(self.exc)
+
+    with pytest.raises(LLMOutputError):
+        await LLMClient(test_settings, _Model(ValueError("bad json"))).astructured(_Schema, [], task="t")
+    with pytest.raises(LLMUnavailable):
+        LLMClient(test_settings, _Model(ConnectionError("down"))).structured(_Schema, [], task="t")

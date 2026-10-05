@@ -77,6 +77,10 @@ class LLMOutputError(AppError):
     code, status_code, message = "MALFORMED_LLM_OUTPUT", 502, "The language model returned malformed output"
 
 
+class LLMUnavailable(AppError):
+    code, status_code, message = "LLM_UNAVAILABLE", 503, "The language model service is unavailable"
+
+
 class EmbeddingError(AppError):
     code, status_code, message = "EMBEDDING_FAILED", 502, "Embedding generation failed"
 
