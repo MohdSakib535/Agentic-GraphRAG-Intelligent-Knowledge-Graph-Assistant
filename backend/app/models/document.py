@@ -40,3 +40,10 @@ class Document(UUIDPrimaryKey, TimestampMixin, Base):
     relationship_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text)
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", default=dict, nullable=False)
+    # Document-level permissions: empty = visible to the whole tenant; otherwise only to members of
+    # at least one listed group (admins always see everything).
+    access_groups: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), default="upload", nullable=False)  # upload | google_drive
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("connectors.id", ondelete="SET NULL"))
+    external_id: Mapped[str | None] = mapped_column(String(200), index=True)
+    external_modified_at: Mapped[str | None] = mapped_column(String(40))

@@ -31,6 +31,7 @@ from app.agents.nodes.rewrite_query import make_rewrite_query
 from app.agents.nodes.vector_search import make_vector_search
 from app.agents.nodes.verify_answer import make_verify_answer
 from app.agents.state import AgentState
+from app.core.access import AccessScope, use_scope
 
 RETRIEVAL_NODES = {"VECTOR": "vector_search", "GRAPH": "graph_search", "HYBRID": "hybrid_search"}
 # analyze + (retrieve + grade + rewrite) * (retries + 1) + (generate + verify) * 2 + finalize, with headroom.
@@ -102,17 +103,29 @@ def make_finalize(deps: AgentDeps) -> Any:
     return finalize
 
 
+def scoped(node: Any) -> Any:
+    """Run a node under the caller's document access scope, taken from the server-set runnable config."""
+
+    async def run(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+        scope = AccessScope.from_config((config.get("configurable") or {}).get("denied_document_ids"))
+        with use_scope(scope):
+            return await node(state, config)
+
+    run.__name__ = getattr(node, "__name__", "node")
+    return run
+
+
 def build_workflow(deps: AgentDeps, checkpointer: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
     graph = StateGraph(AgentState)
-    graph.add_node("analyze_query", make_analyze_query(deps))
-    graph.add_node("vector_search", make_vector_search(deps))
-    graph.add_node("graph_search", make_graph_search(deps))
-    graph.add_node("hybrid_search", make_hybrid_search(deps))
-    graph.add_node("grade_context", make_grade_context(deps))
-    graph.add_node("rewrite_query", make_rewrite_query(deps))
-    graph.add_node("generate_answer", make_generate_answer(deps))
-    graph.add_node("verify_answer", make_verify_answer(deps))
-    graph.add_node("finalize", make_finalize(deps))
+    graph.add_node("analyze_query", scoped(make_analyze_query(deps)))
+    graph.add_node("vector_search", scoped(make_vector_search(deps)))
+    graph.add_node("graph_search", scoped(make_graph_search(deps)))
+    graph.add_node("hybrid_search", scoped(make_hybrid_search(deps)))
+    graph.add_node("grade_context", scoped(make_grade_context(deps)))
+    graph.add_node("rewrite_query", scoped(make_rewrite_query(deps)))
+    graph.add_node("generate_answer", scoped(make_generate_answer(deps)))
+    graph.add_node("verify_answer", scoped(make_verify_answer(deps)))
+    graph.add_node("finalize", scoped(make_finalize(deps)))
 
     graph.add_edge(START, "analyze_query")
     retrieval_targets = ["vector_search", "graph_search", "hybrid_search", "generate_answer"]

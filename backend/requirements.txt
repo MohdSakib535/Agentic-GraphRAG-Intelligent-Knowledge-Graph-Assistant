@@ -35,6 +35,19 @@ rapidfuzz==3.14.6
 pymupdf==1.28.2
 python-docx==1.2.0
 
+# --- Data (Chat with CSV), crypto, observability
+duckdb==1.5.6
+cryptography==50.0.2
+prometheus-client==0.26.0
+opentelemetry-api==1.45.0
+opentelemetry-sdk==1.45.0
+opentelemetry-exporter-otlp-proto-http==1.45.0
+opentelemetry-instrumentation-fastapi==0.66b0
+opentelemetry-instrumentation-sqlalchemy==0.66b0
+opentelemetry-instrumentation-redis==0.66b0
+opentelemetry-instrumentation-httpx==0.66b0
+opentelemetry-instrumentation-celery==0.66b0
+
 # --- Tests
 pytest==9.1.1
 pytest-asyncio==1.4.0

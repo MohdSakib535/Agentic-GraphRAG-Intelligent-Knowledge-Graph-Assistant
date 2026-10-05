@@ -44,7 +44,7 @@ async def run_evaluation(body: EvaluationRunRequest, user: CurrentUserDep, db: D
 @router.get("/results", response_model=EvaluationResultsResponse, summary="Latest (or a specific) run's results")
 async def evaluation_results(user: CurrentUserDep, db: DBSession,
                              run_id: Annotated[uuid.UUID | None, Query()] = None) -> EvaluationResultsResponse:
-    run, rows = await latest_results(db, user.tenant_id, run_id)
+    run, rows = await latest_results(db, user.tenant_id, run_id, None if user.is_admin else user.id)
     return EvaluationResultsResponse(
         run=EvaluationRunOut.model_validate(run) if run else None,
         results=[EvaluationResultOut.model_validate(r) for r in rows],

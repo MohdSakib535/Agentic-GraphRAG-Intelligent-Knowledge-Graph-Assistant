@@ -13,6 +13,7 @@ import uuid
 from collections import defaultdict
 from typing import Any
 
+from app.core.access import require_scope
 from app.utils.text import normalize_name, term_set
 
 
@@ -123,8 +124,13 @@ class InMemoryGraph:
             return False
         return not (f.get("filenames") and c.get("source_filename") not in f["filenames"])
 
+    @staticmethod
+    def _denied() -> set[str]:
+        return set(require_scope().denied_document_ids)  # fail closed, like GraphReader
+
     def _tenant_chunks(self, tenant_id: str) -> list[dict[str, Any]]:
-        return [c for c in self.chunks.values() if c["tenant_id"] == tenant_id]
+        denied = self._denied()
+        return [c for c in self.chunks.values() if c["tenant_id"] == tenant_id and c["document_id"] not in denied]
 
     async def count_chunks(self, tenant_id: str) -> int:
         return len(self._tenant_chunks(tenant_id))
@@ -148,19 +154,22 @@ class InMemoryGraph:
         return [self._chunk_row(c, s) for s, c in scored[:top_k]]
 
     async def chunks_by_ids(self, tenant_id: str, chunk_ids: list[str]) -> list[dict[str, Any]]:
-        return [self._chunk_row(self.chunks[c], 1.0) for c in chunk_ids
-                if c in self.chunks and self.chunks[c]["tenant_id"] == tenant_id]
+        visible = {c["id"] for c in self._tenant_chunks(tenant_id)}
+        return [self._chunk_row(self.chunks[c], 1.0) for c in chunk_ids if c in visible]
 
     async def chunks_mentioning(self, tenant_id: str, entity_ids: list[str], top_k: int) -> list[dict[str, Any]]:
         counts: dict[str, int] = defaultdict(int)
+        visible = {c["id"] for c in self._tenant_chunks(tenant_id)}
         for c, e in self.mentions:
-            if e in entity_ids and self.chunks[c]["tenant_id"] == tenant_id:
+            if e in entity_ids and c in visible:
                 counts[c] += 1
         ranked = sorted(counts.items(), key=lambda kv: -kv[1])[:top_k]
         return [self._chunk_row(self.chunks[c], n / len(entity_ids)) for c, n in ranked]
 
     def _tenant_entities(self, tenant_id: str) -> list[dict[str, Any]]:
-        return [e for e in self.entities.values() if e["tenant_id"] == tenant_id]
+        denied = self._denied()
+        return [e for e in self.entities.values()
+                if e["tenant_id"] == tenant_id and any(d not in denied for d in e["document_ids"])]
 
     async def link_entities_exact(self, tenant_id: str, names: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out = []
@@ -193,14 +202,19 @@ class InMemoryGraph:
         return out[:25]
 
     def _rel_rows(self, tenant_id: str) -> list[dict[str, Any]]:
+        denied = self._denied()
+        prefixes = tuple(require_scope().denied_chunk_prefixes)
         rows = []
         for (sid, rtype, tid), r in self.rels.items():
-            if r["tenant_id"] != tenant_id:
+            if r["tenant_id"] != tenant_id or not any(d not in denied for d in r["document_ids"]):
                 continue
             s, t = self.entities[sid], self.entities[tid]
+            clean = not any(d in denied for d in r["document_ids"])
             rows.append({"source": s["name"], "source_type": s["type"], "relationship": rtype, "target": t["name"],
-                         "target_type": t["type"], "evidence": r["evidence"], "chunk_ids": list(r["chunk_ids"]),
-                         "document_ids": list(r["document_ids"]), "source_id": sid, "target_id": tid, "hops": 1})
+                         "target_type": t["type"], "evidence": r["evidence"] if clean else None,
+                         "chunk_ids": [c for c in r["chunk_ids"] if not (prefixes and c.startswith(prefixes))],
+                         "document_ids": [d for d in r["document_ids"] if d not in denied],
+                         "source_id": sid, "target_id": tid, "hops": 1})
         return rows
 
     async def neighborhood(self, tenant_id: str, entity_ids: list[str], rel_types: list[str] | None, limit: int) -> list[dict[str, Any]]:

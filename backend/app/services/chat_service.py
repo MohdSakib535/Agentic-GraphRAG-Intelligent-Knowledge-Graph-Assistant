@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.workflow import RECURSION_LIMIT, initial_turn_state, thread_id
+from app.core.access import AccessScope
 from app.core.container import Container
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger, request_id_ctx
@@ -75,7 +76,7 @@ class ChatService:
 
     # ----------------------------------------------------------------- run
     async def stream_turn(self, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation: Conversation,
-                          message: str) -> AsyncIterator[dict[str, Any]]:
+                          message: str, scope: AccessScope) -> AsyncIterator[dict[str, Any]]:
         """Run the agent, yielding SSE-style events; the final event is ``completed``."""
         started = time.perf_counter()
         usage = start_usage_tracking()
@@ -87,7 +88,8 @@ class ChatService:
 
         config = {
             "configurable": {"thread_id": thread_id(tid, str(conversation.id)), "tenant_id": tid,
-                             "user_id": str(user_id), "request_id": request_id},
+                             "user_id": str(user_id), "request_id": request_id,
+                             "denied_document_ids": scope.to_config()},
             "recursion_limit": RECURSION_LIMIT,
         }
         state: dict[str, Any] = {}
@@ -141,9 +143,9 @@ class ChatService:
         yield {"event": "completed", "data": response}
 
     async def run_turn(self, tenant_id: uuid.UUID, user_id: uuid.UUID, conversation: Conversation,
-                       message: str) -> dict[str, Any]:
+                       message: str, scope: AccessScope) -> dict[str, Any]:
         final: dict[str, Any] = {}
-        async for event in self.stream_turn(tenant_id, user_id, conversation, message):
+        async for event in self.stream_turn(tenant_id, user_id, conversation, message, scope):
             if event.get("event") == "completed":
                 final = event["data"]
         return final

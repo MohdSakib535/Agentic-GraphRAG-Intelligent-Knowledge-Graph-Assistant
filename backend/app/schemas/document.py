@@ -40,6 +40,8 @@ class DocumentOut(ORMModel):
     relationship_count: int
     error_message: str | None
     metadata: dict[str, Any] = Field(validation_alias="metadata_")
+    access_groups: list[str] = Field(default_factory=list)
+    source: str = "upload"
     created_at: datetime
     updated_at: datetime
 
@@ -66,3 +68,8 @@ class DocumentStats(ORMModel):
     failed_documents: int
     pending_documents: int
     total_chunks: int
+
+
+class DocumentAccessUpdate(ORMModel):
+    access_groups: list[str] = Field(default_factory=list, max_length=20,
+                                     description="Groups allowed to see the document; empty = whole tenant")

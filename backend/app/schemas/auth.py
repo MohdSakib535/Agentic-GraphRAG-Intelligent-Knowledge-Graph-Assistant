@@ -47,8 +47,15 @@ class CreateUserRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     full_name: str | None = Field(default=None, max_length=200)
     role: str = Field(default="member", pattern="^(member|admin)$")
+    groups: list[str] = Field(default_factory=list, max_length=20)
 
     _pw = field_validator("password")(_check_password)
+
+
+class UpdateUserRequest(BaseModel):
+    role: str | None = Field(default=None, pattern="^(member|admin)$")
+    groups: list[str] | None = Field(default=None, max_length=20)
+    is_active: bool | None = None
 
 
 class LoginRequest(BaseModel):
@@ -82,6 +89,8 @@ class UserOut(ORMModel):
     full_name: str | None
     role: str
     is_active: bool
+    groups: list[str] = Field(default_factory=list)
+    auth_provider: str = "password"
     created_at: datetime
 
 

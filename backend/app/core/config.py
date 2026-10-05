@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     celery_broker_url: str | None = None
     celery_result_backend: str | None = None
     cache_ttl_seconds: int = 600
+    answer_cache_enabled: bool = True
+    answer_cache_ttl_seconds: int = 1800
+    embedding_cache_ttl_seconds: int = 86400
     celery_task_always_eager: bool = False
 
     # ------------------------------------------------------------------ JWT
@@ -120,8 +123,45 @@ class Settings(BaseSettings):
     verification_threshold: float = 0.6
     conversation_history_turns: int = 6
 
+    # ---------------------------------------------------------- Evaluation
+    # LLM-as-judge scoring (correctness/faithfulness) when an LLM is configured; keyword scoring otherwise.
+    eval_llm_judge: bool = True
+
+    # ----------------------------------------------------------------- OCR
+    ocr_enabled: bool = True
+    ocr_language: str = "eng"
+    ocr_dpi: int = 300
+    ocr_min_page_chars: int = 25  # pages with less extractable text than this are OCR'd
+
+    # ------------------------------------------------------- Chat with CSV
+    dataset_max_rows: int = 2_000_000
+    dataset_query_timeout_seconds: float = 15.0
+    dataset_result_limit: int = 200
+
+    # ---------------------------------------------------------- Connectors
+    # Fernet key for encrypting connector credentials at rest. Derived from JWT_SECRET_KEY when unset.
+    encryption_key: SecretStr | None = None
+    google_drive_api_url: str = "https://www.googleapis.com/drive/v3"
+    google_token_url: str = "https://oauth2.googleapis.com/token"
+    connector_max_files_per_sync: int = 500
+
+    # --------------------------------------------------- Google login (OIDC)
+    google_client_id: str | None = None
+    google_client_secret: SecretStr | None = None
+    google_redirect_uri: str = "http://localhost:8000/api/v1/auth/google/callback"
+    google_auth_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
+    google_jwks_url: str = "https://www.googleapis.com/oauth2/v3/certs"
+    google_allowed_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    frontend_url: str = "http://localhost:8501"
+
+    # ------------------------------------------------------- Observability
+    otel_enabled: bool = False
+    otel_exporter_otlp_endpoint: str = "http://jaeger:4318"
+    otel_service_name: str = "agentic-graphrag-api"
+    metrics_enabled: bool = True
+
     # ------------------------------------------------------------ Validators
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins", "google_allowed_domains", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
         if isinstance(value, str):
@@ -190,6 +230,10 @@ class Settings(BaseSettings):
     def max_upload_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024
 
+    @property
+    def google_login_enabled(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret)
+
     def public_dict(self) -> dict[str, object]:
         """Non-secret configuration safe to expose to authenticated clients."""
         return {
@@ -211,6 +255,10 @@ class Settings(BaseSettings):
             "agent_max_retries": self.agent_max_retries,
             "text2cypher_enabled": self.enable_text2cypher,
             "max_upload_size_mb": self.max_upload_size_mb,
+            "ocr_enabled": self.ocr_enabled,
+            "answer_cache_enabled": self.answer_cache_enabled,
+            "google_login_enabled": self.google_login_enabled,
+            "observability": {"tracing": self.otel_enabled, "metrics": self.metrics_enabled},
             "rate_limits": {
                 "auth": self.rate_limit_auth,
                 "chat": self.rate_limit_chat,

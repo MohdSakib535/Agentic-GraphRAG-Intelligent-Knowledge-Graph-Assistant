@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import AccessScope, compute_scope, set_scope
 from app.core.config import Settings, get_settings, parse_rate
 from app.core.container import Container
 from app.core.errors import AuthenticationError, AuthorizationError
@@ -35,6 +36,7 @@ class CurrentUser:
     role: str
     token_jti: str
     token_expires_at: datetime
+    groups: tuple[str, ...] = ()
 
     @property
     def tenant(self) -> str:
@@ -67,10 +69,21 @@ async def get_current_user(
         raise AuthenticationError("User is inactive or no longer exists", code="INVALID_TOKEN")
     tenant_id_ctx.set(str(user.tenant_id))
     user_id_ctx.set(str(user.id))
-    return CurrentUser(user.id, user.tenant_id, user.email, user.role, claims.jti, claims.expires_at)
+    return CurrentUser(user.id, user.tenant_id, user.email, user.role, claims.jti, claims.expires_at,
+                       tuple(user.groups or []))
 
 
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
+
+
+async def get_access_scope(user: CurrentUserDep, db: DBSession) -> AccessScope:
+    """The caller's document visibility, made ambient for knowledge-graph reads in this request."""
+    scope = await compute_scope(db, user.tenant_id, user.groups, user.is_admin)
+    set_scope(scope)
+    return scope
+
+
+AccessScopeDep = Annotated[AccessScope, Depends(get_access_scope)]
 
 
 async def require_admin(user: CurrentUserDep) -> CurrentUser:

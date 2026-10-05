@@ -1,7 +1,8 @@
 """Shared plumbing for agent tools: tenant isolation, timeouts, structured errors, logging.
 
-The tenant id is taken from the *runnable config* (set by the server from the
-authenticated JWT), never from tool arguments - a model cannot choose a tenant.
+The tenant id and the document access scope are taken from the *runnable config*
+(set by the server from the authenticated user), never from tool arguments - a model
+cannot choose a tenant or widen its permissions.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
+from app.core.access import AccessScope, use_scope
 from app.core.errors import AppError, ValidationFailed
 from app.core.logging import get_logger
 from app.utils.ids import is_uuid
@@ -42,7 +44,9 @@ async def run_tool(
     started = time.perf_counter()
     try:
         tenant_id = tenant_from_config(config)
-        data = await asyncio.wait_for(fn(tenant_id), timeout=timeout)
+        scope = AccessScope.from_config(((config or {}).get("configurable") or {}).get("denied_document_ids"))
+        with use_scope(scope):
+            data = await asyncio.wait_for(fn(tenant_id), timeout=timeout)
         out = ToolOutput(ok=True, tool=name, latency_ms=int((time.perf_counter() - started) * 1000), data=data)
     except TimeoutError:
         out = ToolOutput(ok=False, tool=name, latency_ms=int((time.perf_counter() - started) * 1000),

@@ -5,28 +5,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from agent_helpers import ask
+
 from app.agents.state import INSUFFICIENT_EVIDENCE_ANSWER
-from app.agents.workflow import RECURSION_LIMIT, initial_turn_state, thread_id
+from app.agents.workflow import thread_id
 from app.retrieval.types import RetrievalResult
 from conftest import TENANT_A, TENANT_B
-
-
-async def ask(container, question: str, tenant: str = TENANT_A, conversation: str | None = None) -> dict[str, Any]:
-    conversation = conversation or uuid.uuid4().hex
-    config = {"configurable": {"thread_id": thread_id(tenant, conversation), "tenant_id": tenant},
-              "recursion_limit": RECURSION_LIMIT}
-    state: dict[str, Any] = {"events": []}
-    async for mode, chunk in container.agent.astream(initial_turn_state(question, tenant, conversation, "test"),
-                                                     config=config, stream_mode=["updates", "custom"]):
-        if mode == "custom":
-            state["events"].append(chunk["event"])
-            continue
-        for node, update in chunk.items():
-            if node.endswith("_search"):
-                state["retrieved"] = update
-            if node != "finalize":
-                state.update(update)
-    return state
 
 
 async def test_vector_query(container) -> None:
@@ -132,6 +116,10 @@ async def test_direct_route_for_small_talk(container) -> None:
 async def test_tools_reject_missing_tenant_context(container) -> None:
     output = await container.tools.vector_search.ainvoke({"query": "Kafka"}, config={"configurable": {}})
     assert output["ok"] is False and output["error"]["code"] == "VALIDATION_ERROR"
+    # A valid tenant but no access scope fails closed rather than searching everything.
+    output = await container.tools.vector_search.ainvoke({"query": "Kafka"},
+                                                        config={"configurable": {"tenant_id": TENANT_A}})
+    assert output["ok"] is False and output["error"]["code"] == "ACCESS_SCOPE_MISSING"
     output = await container.tools.graph_search.ainvoke({"query": "Kafka"}, config={"configurable": {"tenant_id": "x"}})
     assert output["ok"] is False
 

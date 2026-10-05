@@ -16,8 +16,9 @@ from neo4j import AsyncDriver, Driver, Query, RoutingControl
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 from neo4j.graph import Node, Path, Relationship
 
+from app.core.access import require_scope
 from app.core.config import Settings
-from app.core.errors import Neo4jUnavailable, RetrievalError, ValidationFailed
+from app.core.errors import AuthorizationError, Neo4jUnavailable, RetrievalError, ValidationFailed
 from app.core.logging import get_logger
 from app.graph import queries as Q
 from app.graph.schema import (
@@ -203,6 +204,7 @@ class GraphReader:
         self.timeout = settings.neo4j_query_timeout_seconds
 
     async def _read(self, cypher: str, **params: Any) -> list[dict[str, Any]]:
+        params = {**params, **require_scope().params()}  # document-level ACL on every read (fail closed)
         try:
             records, _, _ = await self.driver.execute_query(
                 Query(cypher, timeout=self.timeout),  # type: ignore[arg-type]
@@ -358,6 +360,11 @@ class GraphReader:
         (3) rows referencing nodes of another tenant are dropped.
         """
         tenant_id = _require_tenant(tenant_id)
+        if require_scope().restricted:
+            # Generated Cypher can project arbitrary properties, so it is never run for callers
+            # with restricted documents; templated retrieval (which enforces document ACLs) is used instead.
+            raise AuthorizationError("Text2Cypher is disabled for scopes with restricted documents",
+                                     code="TEXT2CYPHER_RESTRICTED")
 
         async def work(tx: Any) -> list[dict[str, Any]]:
             result = await tx.run(cypher, {**params, "tenant_id": tenant_id})

@@ -63,7 +63,7 @@ async def test_agent_runs_on_openai_compatible_llm(llm_settings, sample_graph, s
     assert container.llm is not None
     usage = start_usage_tracking()
     conversation = uuid.uuid4().hex
-    config = {"configurable": {"thread_id": thread_id(TENANT_A, conversation), "tenant_id": TENANT_A},
+    config = {"configurable": {"thread_id": thread_id(TENANT_A, conversation), "tenant_id": TENANT_A, "denied_document_ids": []},
               "recursion_limit": RECURSION_LIMIT}
     state, tokens = {}, []
     async for mode, chunk in container.agent.astream(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
@@ -19,6 +20,7 @@ from app.schemas.auth import (
     RegisterRequest,
     TenantOut,
     TokenResponse,
+    UpdateUserRequest,
     UserOut,
 )
 from app.schemas.common import ERROR_RESPONSES
@@ -69,4 +71,18 @@ async def create_user(body: CreateUserRequest, admin: Annotated[CurrentUser, Dep
                       settings: SettingsDep) -> UserOut:
     admin_user = await db.get(User, admin.id)
     user = await AuthService(db, settings).create_user(admin_user, admin.tenant_id, body)
+    return UserOut.model_validate(user)
+
+
+@router.get("/users", response_model=list[UserOut], summary="List users in my tenant (admin)")
+async def list_users(admin: Annotated[CurrentUser, Depends(require_admin)], db: DBSession,
+                     settings: SettingsDep) -> list[UserOut]:
+    return [UserOut.model_validate(u) for u in await AuthService(db, settings).list_users(admin.tenant_id)]
+
+
+@router.patch("/users/{user_id}", response_model=UserOut, summary="Update a user's role, groups or status (admin)")
+async def update_user(user_id: uuid.UUID, body: UpdateUserRequest, admin: Annotated[CurrentUser, Depends(require_admin)],
+                      db: DBSession, settings: SettingsDep) -> UserOut:
+    """Groups drive document-level permissions; deactivating a user revokes their refresh tokens."""
+    user = await AuthService(db, settings).update_user(admin.id, admin.tenant_id, user_id, body)
     return UserOut.model_validate(user)

@@ -10,14 +10,15 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import normalize_groups
 from app.core.config import Settings
-from app.core.errors import AuthenticationError, ConflictError
+from app.core.errors import AuthenticationError, ConflictError, NotFoundError, ValidationFailed
 from app.core.logging import get_logger
 from app.core.security import create_token, decode_token, hash_password, hash_token_id, verify_password
 from app.db.redis import revoke_access_token
 from app.models.tenant import Tenant
 from app.models.user import RefreshToken, User
-from app.schemas.auth import CreateUserRequest, RegisterRequest, TokenResponse
+from app.schemas.auth import CreateUserRequest, RegisterRequest, TokenResponse, UpdateUserRequest
 from app.services.audit import record_audit
 
 logger = get_logger(__name__)
@@ -60,11 +61,38 @@ class AuthService:
         if (await self.db.execute(select(User.id).where(User.email == email))).scalar_one_or_none():
             raise ConflictError("An account with this email already exists", code="EMAIL_ALREADY_REGISTERED")
         user = User(tenant_id=tenant_id, email=email, full_name=data.full_name,
-                    password_hash=hash_password(data.password), role=data.role)
+                    password_hash=hash_password(data.password), role=data.role, groups=normalize_groups(data.groups))
         self.db.add(user)
         await self.db.flush()
         record_audit(self.db, "auth.user_created", tenant_id=tenant_id, user_id=admin.id if admin else None,
                      resource_type="user", resource_id=str(user.id))
+        await self.db.commit()
+        return user
+
+    async def list_users(self, tenant_id: uuid.UUID) -> list[User]:
+        rows = await self.db.execute(select(User).where(User.tenant_id == tenant_id).order_by(User.created_at))
+        return list(rows.scalars())
+
+    async def update_user(self, admin_id: uuid.UUID, tenant_id: uuid.UUID, user_id: uuid.UUID,
+                          data: UpdateUserRequest) -> User:
+        user = (await self.db.execute(select(User).where(User.id == user_id, User.tenant_id == tenant_id))).scalar_one_or_none()
+        if user is None:
+            raise NotFoundError("User not found", code="USER_NOT_FOUND")
+        if user.id == admin_id and (data.role == "member" or data.is_active is False):
+            raise ValidationFailed("Admins cannot demote or deactivate themselves", code="SELF_LOCKOUT")
+        changes: dict[str, object] = {}
+        if data.role is not None:
+            user.role = changes["role"] = data.role
+        if data.groups is not None:
+            user.groups = changes["groups"] = normalize_groups(data.groups)
+        if data.is_active is not None:
+            user.is_active = changes["is_active"] = data.is_active
+            if not data.is_active:  # revoke outstanding sessions
+                await self.db.execute(update(RefreshToken).where(RefreshToken.user_id == user.id,
+                                                                 RefreshToken.revoked_at.is_(None))
+                                      .values(revoked_at=datetime.now(UTC)))
+        record_audit(self.db, "auth.user_updated", tenant_id=tenant_id, user_id=admin_id, resource_type="user",
+                     resource_id=str(user.id), details=changes)
         await self.db.commit()
         return user
 

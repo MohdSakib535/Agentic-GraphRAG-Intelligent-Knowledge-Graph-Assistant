@@ -23,12 +23,14 @@ from sqlalchemy import select
 
 from app.agents.nodes.common import Evidence, build_evidence, heuristic_answer, heuristic_verify, verbalize
 from app.agents.state import INSUFFICIENT_EVIDENCE_ANSWER
+from app.core.access import UNRESTRICTED, AccessScope, compute_scope, use_scope
 from app.core.config import Settings, get_settings
 from app.core.container import Container, build_container
 from app.core.logging import get_logger
 from app.db.postgres import utcnow
 from app.llm.client import start_usage_tracking
 from app.models.evaluation import EvaluationResult, EvaluationRun
+from app.models.user import User
 from app.retrieval.query_parsing import expected_answer_type, relation_hints
 from app.retrieval.types import RetrievalResult
 
@@ -114,11 +116,12 @@ async def _baseline(container: Container, system: str, item: dict[str, Any], ten
             "faithfulness": verification["support_score"] if answer != INSUFFICIENT_EVIDENCE_ANSWER else 1.0}
 
 
-async def _agentic(container: Container, item: dict[str, Any], tenant_id: str) -> dict[str, Any]:
+async def _agentic(container: Container, item: dict[str, Any], tenant_id: str, scope: AccessScope) -> dict[str, Any]:
     from app.agents.workflow import RECURSION_LIMIT, initial_turn_state, thread_id
 
     conv = f"eval-{uuid.uuid4().hex}"
-    config = {"configurable": {"thread_id": thread_id(tenant_id, conv), "tenant_id": tenant_id},
+    config = {"configurable": {"thread_id": thread_id(tenant_id, conv), "tenant_id": tenant_id,
+                               "denied_document_ids": scope.to_config()},
               "recursion_limit": RECURSION_LIMIT}
     state: dict[str, Any] = {}
     context: list[str] = []
@@ -142,12 +145,16 @@ async def _agentic(container: Container, item: dict[str, Any], tenant_id: str) -
             "context": context, "faithfulness": float(support) if support is not None else 1.0}
 
 
-async def evaluate_question(container: Container, system: str, item: dict[str, Any], tenant_id: str) -> dict[str, Any]:
+async def evaluate_question(container: Container, system: str, item: dict[str, Any], tenant_id: str,
+                            scope: AccessScope = UNRESTRICTED) -> dict[str, Any]:
     usage = start_usage_tracking()
     started = time.perf_counter()
     try:
-        out = await (_agentic(container, item, tenant_id) if system == "agentic_graphrag"
-                     else _baseline(container, system, item, tenant_id))
+        if system == "agentic_graphrag":
+            out = await _agentic(container, item, tenant_id, scope)
+        else:
+            with use_scope(scope):
+                out = await _baseline(container, system, item, tenant_id)
     except Exception as exc:
         logger.warning("evaluation_question_failed", extra={"system": system, "qid": item["id"], "error": type(exc).__name__})
         out = {"answer": INSUFFICIENT_EVIDENCE_ANSWER, "strategy": None, "context": [], "faithfulness": 0.0,
@@ -188,7 +195,8 @@ def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def run_evaluation(container: Container, tenant_id: str, systems: list[str], categories: list[str] | None = None,
-                         limit: int | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                         limit: int | None = None, scope: AccessScope = UNRESTRICTED,
+                         ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     dataset = load_dataset()
     if categories:
         dataset = [q for q in dataset if q["category"] in categories]
@@ -197,7 +205,7 @@ async def run_evaluation(container: Container, tenant_id: str, systems: list[str
     results = []
     for item in dataset:
         for system in systems:
-            results.append(await evaluate_question(container, system, item, tenant_id))
+            results.append(await evaluate_question(container, system, item, tenant_id, scope))
     return results, summarise(results)
 
 
@@ -223,9 +231,13 @@ async def execute_evaluation_run(run_id: uuid.UUID, settings: Settings | None = 
             await db.commit()
             tenant_id, systems = str(run.tenant_id), list(run.systems or SYSTEMS)
             options = dict(run.summary or {}).get("options", {})
+            creator = await db.get(User, run.created_by) if run.created_by else None
+            # The run sees exactly what its creator may see.
+            scope = await compute_scope(db, run.tenant_id, (creator.groups if creator else []) or [],
+                                        bool(creator and creator.role == "admin"))
         try:
             results, summary = await run_evaluation(container, tenant_id, systems, options.get("categories"),
-                                                    options.get("limit"))
+                                                    options.get("limit"), scope)
         except Exception as exc:
             logger.exception("evaluation_run_failed")
             async with session_factory() as db:
@@ -248,8 +260,12 @@ async def execute_evaluation_run(run_id: uuid.UUID, settings: Settings | None = 
         await engine.dispose()
 
 
-async def latest_results(db: Any, tenant_id: uuid.UUID, run_id: uuid.UUID | None = None) -> tuple[EvaluationRun | None, list[EvaluationResult]]:
+async def latest_results(db: Any, tenant_id: uuid.UUID, run_id: uuid.UUID | None = None,
+                         created_by: uuid.UUID | None = None) -> tuple[EvaluationRun | None, list[EvaluationResult]]:
+    """``created_by`` restricts to one user's runs (answers were produced under that user's document access)."""
     query = select(EvaluationRun).where(EvaluationRun.tenant_id == tenant_id)
+    if created_by is not None:
+        query = query.where(EvaluationRun.created_by == created_by)
     if run_id:
         query = query.where(EvaluationRun.id == run_id)
     run = (await db.execute(query.order_by(EvaluationRun.created_at.desc()).limit(1))).scalar_one_or_none()

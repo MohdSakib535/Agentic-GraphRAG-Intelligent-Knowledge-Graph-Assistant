@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.core.access import current_scope
 from app.core.errors import AppError, CypherValidationError
 from app.core.logging import get_logger
 from app.graph.cypher_validator import ValidatedCypher, validate_cypher
@@ -52,6 +53,9 @@ class Text2Cypher:
         return validate_cypher(generated.cypher, max_limit=self.max_rows)
 
     async def run(self, question: str, tenant_id: str, hints: str = "") -> tuple[ValidatedCypher | None, list[dict[str, Any]]]:
+        scope = current_scope()
+        if scope is None or scope.restricted:
+            return None, []  # see GraphReader.run_validated_readonly
         try:
             validated = await self.generate(question, hints)
         except CypherValidationError as exc:

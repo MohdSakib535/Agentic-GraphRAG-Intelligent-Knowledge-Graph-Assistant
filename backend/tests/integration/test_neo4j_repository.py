@@ -6,7 +6,8 @@ import uuid
 
 import pytest
 
-from app.core.errors import RetrievalError
+from app.core.access import UNRESTRICTED, AccessScope, set_scope
+from app.core.errors import AuthorizationError, RetrievalError
 from app.graph.cypher_validator import validate_cypher
 from app.graph.repository import GraphReader, GraphWriter
 
@@ -51,6 +52,7 @@ def _populate(writer: GraphWriter, tenant: str, project: str) -> str:
 
 async def test_repository_roundtrip_isolation_and_delete(repo) -> None:
     writer, reader = repo
+    set_scope(UNRESTRICTED)
     t1, t2 = str(uuid.uuid4()), str(uuid.uuid4())
     doc1 = _populate(writer, t1, "Project One")
     _populate(writer, t2, "Project Two")
@@ -73,6 +75,7 @@ async def _docs(reader: GraphReader, tenant: str) -> list[dict]:
 
 async def test_text2cypher_execution_is_read_only_and_tenant_scoped(repo) -> None:
     writer, reader = repo
+    set_scope(UNRESTRICTED)
     t1, t2 = str(uuid.uuid4()), str(uuid.uuid4())
     d1, d2 = _populate(writer, t1, "Project One"), _populate(writer, t2, "Project Two")
     q = validate_cypher("MATCH (p:Person)-[:MANAGES]->(x:Project) RETURN p.name AS person, x.name AS project")
@@ -84,3 +87,40 @@ async def test_text2cypher_execution_is_read_only_and_tenant_scoped(repo) -> Non
     assert (await reader.stats(t1))["entities"] == 2
     writer.delete_document(t1, d1)
     writer.delete_document(t2, d2)
+
+
+async def test_document_acl_filters_every_read_in_cypher(repo) -> None:
+    """Real Neo4j: a denied document hides its chunks and the facts only it supports, and withholds
+    evidence text from shared facts."""
+    writer, reader = repo
+    tenant = str(uuid.uuid4())
+    public = _populate(writer, tenant, "Project One")
+    secret = str(uuid.uuid4())
+    writer.upsert_document(tenant, secret, "secret.md", "Secret", "md")
+    cid = f"chk_{uuid.UUID(secret).hex}_00000"
+    writer.write_chunks(tenant, secret, [{"id": cid, "tenant_id": tenant, "document_id": secret, "chunk_index": 0,
+                                          "text": "Rahul manages Project One. Secret budget is 5M.", "token_count": 9,
+                                          "page_number": 1, "page_end": 1, "section": "S", "source_filename": "secret.md",
+                                          "document_title": "Secret"}])
+    writer.set_chunk_embeddings(tenant, [{"id": cid, "embedding": [1.0] + [0.0] * 1535}])
+    writer.upsert_entities(tenant, [{"id": f"budget_{tenant}", "tenant_id": tenant, "name": "Budget", "type": "Concept",
+                                     "normalized_name": "budget", "description": "secret", "aliases": [],
+                                     "document_id": secret}])
+    writer.upsert_relationships(tenant, secret, [{"source_id": f"p_{tenant}", "target_id": f"x_{tenant}",
+                                                  "type": "MANAGES", "evidence": "SECRET EVIDENCE", "chunk_ids": [cid]}])
+    set_scope(AccessScope((secret,)))
+    hits = await reader.vector_search(tenant, [1.0] + [0.0] * 1535, top_k=10)
+    assert [h["document_id"] for h in hits] == [public]
+    facts = await reader.neighborhood(tenant, [f"p_{tenant}"], None, 10)
+    assert len(facts) == 1 and facts[0]["evidence"] is None and facts[0]["document_ids"] == [public]
+    assert all(not c.startswith(f"chk_{uuid.UUID(secret).hex}") for c in facts[0]["chunk_ids"])
+    assert await reader.search_entities(tenant, "budget", None, 10, 0) == []
+    assert (await reader.stats(tenant))["documents"] == 1
+    with pytest.raises(AuthorizationError):
+        await reader.run_validated_readonly("MATCH (n:Person {tenant_id: $tenant_id}) RETURN n.name", {}, tenant, 5)
+    set_scope(UNRESTRICTED)
+    assert len(await reader.search_entities(tenant, "budget", None, 10, 0)) == 1
+    full = await reader.neighborhood(tenant, [f"p_{tenant}"], None, 10)
+    assert full[0]["evidence"] and len(full[0]["document_ids"]) == 2
+    writer.delete_document(tenant, public)
+    writer.delete_document(tenant, secret)

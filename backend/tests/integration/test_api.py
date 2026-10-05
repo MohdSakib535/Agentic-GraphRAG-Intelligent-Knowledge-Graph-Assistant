@@ -66,7 +66,7 @@ def test_auth_flow(client) -> None:
     login = client.post(f"{API}/auth/login", json={"email": user["email"], "password": PASSWORD}).json()
     me = client.get(f"{API}/auth/me", headers=auth(login)).json()
     assert me["user"]["email"] == user["email"] and me["user"]["role"] == "admin"
-    assert "password" not in json.dumps(me)
+    assert "password_hash" not in json.dumps(me) and PASSWORD not in json.dumps(me)
 
     rotated = client.post(f"{API}/auth/refresh", json={"refresh_token": login["refresh_token"]})
     assert rotated.status_code == 200 and rotated.json()["refresh_token"] != login["refresh_token"]
@@ -221,3 +221,37 @@ def test_evaluation_run(client, tenant_a) -> None:
     assert summary["agentic_graphrag"]["accuracy"] >= summary["vector_rag"]["accuracy"]
     assert summary["agentic_graphrag"]["by_category"]["unanswerable"] == 1.0
     assert len(results["results"]) == 2 * 13
+
+
+def test_document_level_permissions(client) -> None:
+    admin = register(client, "ACL Corp")
+    member_email = f"member-{uuid.uuid4().hex[:8]}@example.com"
+    created = client.post(f"{API}/auth/users", headers=auth(admin),
+                          json={"email": member_email, "password": PASSWORD, "groups": ["engineering"]})
+    assert created.status_code == 201, created.text
+    member = client.post(f"{API}/auth/login", json={"email": member_email, "password": PASSWORD}).json()
+    for name, groups in (("team-directory.md", "hr"), ("project-overview.docx", "")):
+        r = client.post(f"{API}/documents/upload", headers=auth(admin), data={"access_groups": groups},
+                        files={"file": (name, (SAMPLES / name).read_bytes())})
+        assert r.status_code == 202, r.text
+    hr_doc = next(d for d in client.get(f"{API}/documents", headers=auth(admin)).json()["items"]
+                  if d["filename"] == "team-directory.md")
+    assert hr_doc["access_groups"] == ["hr"]
+    # Member (engineering) cannot see the HR document anywhere.
+    assert [d["filename"] for d in client.get(f"{API}/documents", headers=auth(member)).json()["items"]] == \
+        ["project-overview.docx"]
+    assert client.get(f"{API}/documents/{hr_doc['id']}", headers=auth(member)).status_code == 404
+    assert chat(client, member, "Who reports to Rahul?")["answer"].startswith("I don't have enough information")
+    assert chat(client, admin, "Who reports to Rahul?")["answer"].startswith("Amit")
+    # Non-admins cannot change access or restrict to groups they don't belong to.
+    assert client.put(f"{API}/documents/{hr_doc['id']}/access", headers=auth(member),
+                      json={"access_groups": []}).status_code == 403
+    bad = client.post(f"{API}/documents/upload", headers=auth(member), data={"access_groups": "hr"},
+                      files={"file": ("x.md", b"# X\n\nhello world")})
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "INVALID_ACCESS_GROUPS"
+    # Granting the group makes the document visible immediately (cache scoped by permissions).
+    users = client.get(f"{API}/auth/users", headers=auth(admin)).json()
+    member_id = next(u["id"] for u in users if u["email"] == member_email)
+    assert client.patch(f"{API}/auth/users/{member_id}", headers=auth(admin),
+                        json={"groups": ["engineering", "hr"]}).json()["groups"] == ["engineering", "hr"]
+    assert chat(client, member, "Who reports to Rahul?")["answer"].startswith("Amit")

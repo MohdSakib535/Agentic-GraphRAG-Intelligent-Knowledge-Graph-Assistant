@@ -6,9 +6,10 @@ import asyncio
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import UNRESTRICTED, AccessScope, normalize_groups
 from app.core.config import Settings
 from app.core.errors import ConflictError, NotFoundError, RedisUnavailable
 from app.core.logging import get_logger
@@ -30,7 +31,8 @@ class DocumentService:
         self.storage = FileStorage(settings.upload_dir)
         self.cache = cache
 
-    async def upload(self, tenant_id: uuid.UUID, user_id: uuid.UUID, file: ValidatedFile) -> tuple[Document, IngestionJob]:
+    async def upload(self, tenant_id: uuid.UUID, user_id: uuid.UUID, file: ValidatedFile,
+                     access_groups: list[str] | None = None) -> tuple[Document, IngestionJob]:
         existing = (
             await self.db.execute(
                 select(Document).where(Document.tenant_id == tenant_id, Document.checksum == file.checksum)
@@ -45,7 +47,7 @@ class DocumentService:
         document = Document(
             id=document_id, tenant_id=tenant_id, uploaded_by=user_id, filename=file.filename, file_type=file.file_type,
             content_type=file.content_type, size_bytes=file.size, checksum=file.checksum, storage_path=path,
-            status=DocumentStatus.PENDING, metadata_={},
+            status=DocumentStatus.PENDING, metadata_={}, access_groups=normalize_groups(access_groups),
         )
         job = IngestionJob(tenant_id=tenant_id, document_id=document_id, status=JobStatus.QUEUED, stage=JobStage.QUEUED,
                            stage_history=[], stats={})
@@ -70,8 +72,9 @@ class DocumentService:
         job.celery_task_id = result.id
         await self.db.commit()
 
-    async def reprocess(self, tenant_id: uuid.UUID, user_id: uuid.UUID, document_id: uuid.UUID) -> IngestionJob:
-        document = await self.get(tenant_id, document_id)
+    async def reprocess(self, tenant_id: uuid.UUID, user_id: uuid.UUID, document_id: uuid.UUID,
+                        scope: AccessScope = UNRESTRICTED) -> IngestionJob:
+        document = await self.get(tenant_id, document_id, scope)
         document.status = DocumentStatus.PENDING
         job = IngestionJob(tenant_id=tenant_id, document_id=document.id, status=JobStatus.QUEUED,
                            stage=JobStage.QUEUED, stage_history=[], stats={})
@@ -82,9 +85,16 @@ class DocumentService:
         await self._enqueue(job)
         return job
 
-    async def list(self, tenant_id: uuid.UUID, limit: int, offset: int, status: str | None) -> tuple[list[Document], int]:
-        query = select(Document).where(Document.tenant_id == tenant_id)
-        count_q = select(func.count()).select_from(Document).where(Document.tenant_id == tenant_id)
+    @staticmethod
+    def _visible(scope: AccessScope) -> Any:
+        denied = [uuid.UUID(d) for d in scope.denied_document_ids]
+        return Document.id.not_in(denied) if denied else true()
+
+    async def list(self, tenant_id: uuid.UUID, limit: int, offset: int, status: str | None,
+                   scope: AccessScope = UNRESTRICTED) -> tuple[list[Document], int]:
+        query = select(Document).where(Document.tenant_id == tenant_id, self._visible(scope))
+        count_q = select(func.count()).select_from(Document).where(Document.tenant_id == tenant_id,
+                                                                    self._visible(scope))
         if status:
             query = query.where(Document.status == status.upper())
             count_q = count_q.where(Document.status == status.upper())
@@ -92,10 +102,11 @@ class DocumentService:
         total = (await self.db.execute(count_q)).scalar_one()
         return list(rows), int(total)
 
-    async def get(self, tenant_id: uuid.UUID, document_id: uuid.UUID) -> Document:
-        # Tenant filter in the query itself: another tenant's id yields 404, not 403 (no existence oracle).
+    async def get(self, tenant_id: uuid.UUID, document_id: uuid.UUID, scope: AccessScope = UNRESTRICTED) -> Document:
+        # Tenant + ACL filters in the query itself: another tenant's (or a restricted) id yields 404 - no existence oracle.
         document = (
-            await self.db.execute(select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id))
+            await self.db.execute(select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id,
+                                                         self._visible(scope)))
         ).scalar_one_or_none()
         if document is None:
             raise NotFoundError("Document not found", code="DOCUMENT_NOT_FOUND")
@@ -111,8 +122,20 @@ class DocumentService:
             )
         ).scalar_one_or_none()
 
-    async def delete(self, tenant_id: uuid.UUID, user_id: uuid.UUID, document_id: uuid.UUID) -> None:
+    async def set_access(self, tenant_id: uuid.UUID, user_id: uuid.UUID, document_id: uuid.UUID,
+                         access_groups: list[str]) -> Document:
         document = await self.get(tenant_id, document_id)
+        document.access_groups = normalize_groups(access_groups)
+        record_audit(self.db, "document.access_changed", tenant_id=tenant_id, user_id=user_id, resource_type="document",
+                     resource_id=str(document_id), details={"access_groups": document.access_groups})
+        await self.db.commit()
+        if self.cache is not None:
+            await self.cache.invalidate_tenant(str(tenant_id))  # cached answers were computed under the old ACL
+        return document
+
+    async def delete(self, tenant_id: uuid.UUID, user_id: uuid.UUID, document_id: uuid.UUID,
+                     scope: AccessScope = UNRESTRICTED) -> None:
+        document = await self.get(tenant_id, document_id, scope)
         # Graph first: if Neo4j is down we fail before touching relational state.
         writer = GraphWriter(get_sync_driver(self.settings), self.settings)
         await asyncio.to_thread(writer.delete_document, str(tenant_id), str(document_id))
@@ -124,11 +147,11 @@ class DocumentService:
         if self.cache is not None:
             await self.cache.invalidate_tenant(str(tenant_id))
 
-    async def stats(self, tenant_id: uuid.UUID) -> dict[str, Any]:
+    async def stats(self, tenant_id: uuid.UUID, scope: AccessScope = UNRESTRICTED) -> dict[str, Any]:
         rows = (
             await self.db.execute(
                 select(Document.status, func.count(), func.coalesce(func.sum(Document.chunk_count), 0))
-                .where(Document.tenant_id == tenant_id)
+                .where(Document.tenant_id == tenant_id, self._visible(scope))
                 .group_by(Document.status)
             )
         ).all()

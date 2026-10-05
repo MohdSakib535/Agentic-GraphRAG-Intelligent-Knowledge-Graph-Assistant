@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Any
 
+from app.core.access import require_scope
 from app.core.config import Settings
 from app.core.errors import AppError, RetrievalError
 from app.core.logging import get_logger
@@ -61,7 +62,8 @@ class RetrievalService:
         if strategy not in STRATEGIES:
             raise RetrievalError(f"Unknown retrieval strategy {strategy}")
         top_k = top_k or self.settings.top_k
-        digest = query_hash(RETRIEVAL_VERSION, strategy, question.strip().lower(), sorted(entities or []), sorted(relations or []),
+        scope = require_scope()
+        digest = query_hash(RETRIEVAL_VERSION, scope.fingerprint, strategy, question.strip().lower(), sorted(entities or []), sorted(relations or []),
                             answer_type, top_k, filters or {}, rerank, self.reranker.name)
         if use_cache and self.cache is not None:
             cached = await self.cache.get(tenant_id, "retrieval", digest)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from app.core.access import UNRESTRICTED, set_scope
 from conftest import TENANT_A, TENANT_B
 
 
 async def test_ingestion_builds_deduplicated_graph(sample_graph) -> None:
+    set_scope(UNRESTRICTED)
     names = {(e["name"], e["type"]) for e in sample_graph.entities.values() if e["tenant_id"] == TENANT_A}
     for expected in [("Rahul", "Person"), ("Amit", "Person"), ("Priya", "Person"), ("Neha", "Person"),
                      ("Project Alpha", "Project"), ("Project Beta", "Project"), ("Project Gamma", "Project"),
@@ -19,6 +21,7 @@ async def test_ingestion_builds_deduplicated_graph(sample_graph) -> None:
 
 
 async def test_vector_similarity_search(container) -> None:
+    set_scope(UNRESTRICTED)
     hits = await container.retrieval.vector.similarity_search("What is Kafka?", TENANT_A, top_k=5)
     assert hits and "Kafka" in hits[0].text
     assert hits[0].source_filename and hits[0].score > 0
@@ -28,6 +31,7 @@ async def test_vector_similarity_search(container) -> None:
 
 
 async def test_graph_search_single_hop(container) -> None:
+    set_scope(UNRESTRICTED)
     result = await container.retrieval.graph.search("Who manages Project Alpha?", TENANT_A)
     assert [c.name for c in result.answer_candidates] == ["Rahul"]
     assert any(f.source == "Rahul" and f.relationship == "MANAGES" and f.target == "Project Alpha" and f.chunk_ids
@@ -35,6 +39,7 @@ async def test_graph_search_single_hop(container) -> None:
 
 
 async def test_graph_search_multi_hop_traversal(container) -> None:
+    set_scope(UNRESTRICTED)
     result = await container.retrieval.graph.search("Who works on projects managed by Rahul that use Kafka?", TENANT_A)
     assert {b.name for b in result.bridges} == {"Project Alpha"}
     assert sorted(c.name for c in result.answer_candidates) == ["Amit", "Neha"]
@@ -43,6 +48,7 @@ async def test_graph_search_multi_hop_traversal(container) -> None:
 
 
 async def test_hybrid_search_fuses_graph_and_vector(container) -> None:
+    set_scope(UNRESTRICTED)
     result = await container.retrieval.retrieve("HYBRID", "Which developers work on Kafka projects managed by Rahul?",
                                                 TENANT_A, relations=["WORKS_ON", "MANAGES"], answer_type="Person")
     assert result.strategy == "HYBRID" and result.chunks and result.facts
@@ -51,6 +57,7 @@ async def test_hybrid_search_fuses_graph_and_vector(container) -> None:
 
 
 async def test_retrieval_never_crosses_tenants(container) -> None:
+    set_scope(UNRESTRICTED)
     hits = await container.retrieval.vector.similarity_search("Project Zeta Cassandra", TENANT_A, top_k=20)
     assert all("Zeta" not in h.text for h in hits)
     zeta = await container.retrieval.graph.search("Who manages Project Zeta?", TENANT_A)
