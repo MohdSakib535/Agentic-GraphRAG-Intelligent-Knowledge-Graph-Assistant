@@ -34,6 +34,27 @@ x-backend-env: &backend-env
   AGENT_MAX_RETRIES: ${AGENT_MAX_RETRIES:-3}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8501}
   UPLOAD_DIR: /data/uploads
+  # Feature flags
+  OCR_ENABLED: ${OCR_ENABLED:-true}
+  ANSWER_CACHE_ENABLED: ${ANSWER_CACHE_ENABLED:-true}
+  EVAL_LLM_JUDGE: ${EVAL_LLM_JUDGE:-true}
+  # Connectors (credentials are Fernet-encrypted with ENCRYPTION_KEY; derived from JWT_SECRET_KEY when empty)
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+  CONNECTOR_SYNC_INTERVAL_MINUTES: ${CONNECTOR_SYNC_INTERVAL_MINUTES:-60}
+  # Google login (OIDC) - enabled when client id + secret are set
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/api/v1/auth/google/callback}
+  GOOGLE_ALLOWED_DOMAINS: ${GOOGLE_ALLOWED_DOMAINS:-}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8501}
+  # Observability
+  OTEL_ENABLED: ${OTEL_ENABLED:-false}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+  METRICS_ENABLED: ${METRICS_ENABLED:-true}
+  METRICS_TOKEN: ${METRICS_TOKEN:-}
+  LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+  LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+  LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-agentic-graphrag}
 
 services:
   postgres:
@@ -125,6 +146,16 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  celery-beat:
+    build:
+      context: ./backend
+      secrets: [build_ca]
+    command: ["beat"]
+    environment: *backend-env
+    depends_on:
+      backend: {condition: service_healthy}
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
@@ -141,6 +172,41 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    restart: unless-stopped
+
+  # ---- optional observability stack:  docker compose --profile observability up -d
+  #      (set OTEL_ENABLED=true for traces)  Jaeger :16686  Prometheus :9090  Grafana :3000
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: [observability]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [observability]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on: [prometheus]
     restart: unless-stopped
 
 secrets:

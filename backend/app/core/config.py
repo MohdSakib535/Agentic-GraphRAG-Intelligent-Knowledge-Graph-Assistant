@@ -6,6 +6,7 @@ Nothing secret is ever exposed through the public settings endpoint.
 
 from __future__ import annotations
 
+import os
 import re
 from functools import lru_cache
 from typing import Annotated, Literal
@@ -160,6 +161,8 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://jaeger:4318"
     otel_service_name: str = "agentic-graphrag-api"
     metrics_enabled: bool = True
+    # Optional bearer token required to scrape /metrics (empty = open; restrict at the network level).
+    metrics_token: SecretStr = SecretStr("")
 
     # ------------------------------------------------------------ Validators
     @field_validator("cors_origins", "google_allowed_domains", mode="before")
@@ -259,7 +262,12 @@ class Settings(BaseSettings):
             "ocr_enabled": self.ocr_enabled,
             "answer_cache_enabled": self.answer_cache_enabled,
             "google_login_enabled": self.google_login_enabled,
-            "observability": {"tracing": self.otel_enabled, "metrics": self.metrics_enabled},
+            "observability": {
+                "tracing": self.otel_enabled,
+                "metrics": self.metrics_enabled,
+                # LangChain reads LANGSMITH_* itself; only report whether it is on (never the key).
+                "langsmith": os.environ.get("LANGSMITH_TRACING", "").lower() == "true",
+            },
             "rate_limits": {
                 "auth": self.rate_limit_auth,
                 "chat": self.rate_limit_chat,

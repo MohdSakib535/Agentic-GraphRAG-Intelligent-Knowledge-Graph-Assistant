@@ -20,6 +20,8 @@ from app.core.config import Settings, get_settings
 from app.core.container import build_container, open_postgres_checkpointer
 from app.core.errors import AppError, RateLimitExceeded, error_payload
 from app.core.logging import configure_logging, get_logger, request_id_ctx, tenant_id_ctx, user_id_ctx
+from app.core.metrics import HTTP_LATENCY, HTTP_REQUESTS
+from app.core.telemetry import instrument_app, instrument_engine, setup_tracing
 from app.db.neo4j import close_async_driver, close_sync_driver, ensure_schema, init_async_driver
 from app.db.postgres import dispose_async_engine, init_async_engine
 from app.db.redis import close_redis, init_redis
@@ -33,7 +35,7 @@ DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     async with AsyncExitStack() as stack:
-        init_async_engine(settings)
+        instrument_engine(init_async_engine(settings), settings)
         stack.push_async_callback(dispose_async_engine)
         driver = init_async_driver(settings)
         stack.push_async_callback(close_async_driver)
@@ -82,9 +84,13 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         if rl:
             response.headers["X-RateLimit-Limit"] = str(rl["limit"])
             response.headers["X-RateLimit-Remaining"] = str(max(0, rl["remaining"]))
+        elapsed = time.perf_counter() - started
+        route = getattr(request.scope.get("route"), "path", None) or "unmatched"  # template, never raw ids
+        if route != "/metrics":
+            HTTP_REQUESTS.labels(method=request.method, route=route, status=str(response.status_code)).inc()
+            HTTP_LATENCY.labels(method=request.method, route=route).observe(elapsed)
         logger.info("http_request", extra={"method": request.method, "path": request.url.path,
-                                           "status": response.status_code,
-                                           "duration_ms": int((time.perf_counter() - started) * 1000)})
+                                           "status": response.status_code, "duration_ms": int(elapsed * 1000)})
         return response
 
 
@@ -134,6 +140,7 @@ TAGS = [
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level, settings.log_json)
+    setup_tracing(settings)
     app = FastAPI(
         title="Agentic GraphRAG API",
         description=(
@@ -159,9 +166,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_age=600,
     )
     register_exception_handlers(app)
+    instrument_app(app, settings)
     for router in (health.router, auth.router, documents.router, chat.router, search.router, datasets.router,
                    graph_admin.router, connectors.router, evaluation.router):
         app.include_router(router, prefix=settings.api_prefix)
+    app.include_router(health.metrics_router)
     return app
 
 

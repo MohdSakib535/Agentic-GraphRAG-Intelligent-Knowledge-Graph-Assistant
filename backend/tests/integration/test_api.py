@@ -345,3 +345,11 @@ def test_chat_with_csv(client) -> None:
     redirect = client.post(f"{API}/documents/upload", headers=auth(admin), files={"file": ("e.csv", csv_bytes, "text/csv")})
     assert redirect.status_code == 415 and redirect.json()["error"]["code"] == "USE_DATASETS_FOR_TABULAR_DATA"
     assert client.delete(f"{API}/datasets/{ds['id']}", headers=auth(admin)).status_code == 204
+
+
+def test_prometheus_metrics(client, tenant_a) -> None:
+    client.get(f"{API}/documents/{uuid.uuid4()}", headers=auth(tenant_a))  # 404 on a templated route
+    text = client.get("/metrics").text
+    assert '/documents/{document_id}",status="404"' in text and "graphrag_http_requests_total" in text
+    assert 'graphrag_ingestion_jobs{status="COMPLETED"}' in text
+    assert tenant_a["email"] not in text and str(tenant_a["user"]["tenant_id"]) not in text

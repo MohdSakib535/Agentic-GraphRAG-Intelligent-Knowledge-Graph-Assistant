@@ -32,6 +32,7 @@ from app.agents.nodes.vector_search import make_vector_search
 from app.agents.nodes.verify_answer import make_verify_answer
 from app.agents.state import AgentState
 from app.core.access import AccessScope, use_scope
+from app.core.telemetry import span
 
 RETRIEVAL_NODES = {"VECTOR": "vector_search", "GRAPH": "graph_search", "HYBRID": "hybrid_search"}
 # analyze + (retrieve + grade + rewrite) * (retries + 1) + (generate + verify) * 2 + finalize, with headroom.
@@ -108,9 +109,10 @@ def scoped(node: Any) -> Any:
 
     async def run(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
         scope = AccessScope.from_config((config.get("configurable") or {}).get("denied_document_ids"))
-        with use_scope(scope):
+        with use_scope(scope), span(f"agent.{name}", **{"agent.node": name}):
             return await node(state, config)
 
+    name = getattr(node, "__name__", "node")
     run.__name__ = getattr(node, "__name__", "node")
     return run
 

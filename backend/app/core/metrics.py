@@ -6,7 +6,17 @@ tenant ids, user ids or question text - so cardinality stays small and nothing s
 
 from __future__ import annotations
 
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+import os
+
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+    multiprocess,
+)
 
 HTTP_REQUESTS = Counter("graphrag_http_requests_total", "HTTP requests", ["method", "route", "status"])
 HTTP_LATENCY = Histogram(
@@ -21,7 +31,10 @@ CHAT_LATENCY = Histogram(
 AGENT_RETRIES = Counter("graphrag_agent_query_rewrites_total", "Query rewrites performed by the agent")
 LLM_TOKENS = Counter("graphrag_llm_tokens_total", "LLM tokens consumed", ["kind"])
 CACHE_EVENTS = Counter("graphrag_cache_events_total", "Cache lookups", ["namespace", "result"])
-INGESTION_JOBS = Counter("graphrag_ingestion_jobs_total", "Finished ingestion jobs", ["status"])
+# Ingestion runs in Celery worker processes; these gauges are refreshed from Postgres at scrape time.
+INGESTION_JOBS = Gauge("graphrag_ingestion_jobs", "Ingestion jobs by status (all tenants)", ["status"],
+                       multiprocess_mode="mostrecent")
+DOCUMENTS = Gauge("graphrag_documents", "Documents by status (all tenants)", ["status"], multiprocess_mode="mostrecent")
 DATASET_QUERIES = Counter("graphrag_dataset_queries_total", "Chat-with-CSV queries", ["planner", "outcome"])
 FEEDBACK = Counter("graphrag_feedback_total", "Answer feedback", ["rating"])
 
@@ -41,4 +54,9 @@ def record_chat_turn(strategy: str | None, outcome: str, seconds: float, retries
 
 
 def render() -> tuple[bytes, str]:
+    # Several uvicorn workers: aggregate every process's samples (PROMETHEUS_MULTIPROC_DIR, set by the entrypoint).
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return generate_latest(registry), CONTENT_TYPE_LATEST
     return generate_latest(), CONTENT_TYPE_LATEST

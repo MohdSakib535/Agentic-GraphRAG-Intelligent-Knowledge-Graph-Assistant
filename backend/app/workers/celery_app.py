@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from celery import Celery
-from celery.signals import after_setup_logger, worker_process_shutdown
+from celery.signals import after_setup_logger, worker_process_init, worker_process_shutdown
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -42,6 +42,13 @@ if settings.connector_sync_interval_minutes > 0:
 @after_setup_logger.connect
 def _setup_logging(**_: object) -> None:
     configure_logging(settings.log_level, settings.log_json)
+
+
+@worker_process_init.connect
+def _setup_tracing(**_: object) -> None:
+    from app.core.telemetry import setup_tracing
+
+    setup_tracing(settings, component="worker")
 
 
 @worker_process_shutdown.connect
