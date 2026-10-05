@@ -92,6 +92,9 @@ async def require_admin(user: CurrentUserDep) -> CurrentUser:
     return user
 
 
+AdminDep = Annotated[CurrentUser, Depends(require_admin)]
+
+
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 

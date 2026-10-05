@@ -50,6 +50,7 @@ class GraphFact(BaseModel):
     document_ids: list[str] = Field(default_factory=list)
     score: float = 1.0
     hops: int = 1
+    manual: bool = False
 
 
 class SearchResponse(BaseModel):
@@ -92,3 +93,37 @@ class GraphStats(BaseModel):
     documents: int
     entities_by_type: dict[str, int]
     relationships_by_type: dict[str, int]
+
+
+# ------------------------------------------------------------------ graph curation (admin)
+class EntityUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    type: str | None = Field(default=None, max_length=40)
+    description: str | None = Field(default=None, max_length=2000)
+    aliases: list[str] | None = Field(default=None, max_length=50)
+
+
+class EntityMerge(BaseModel):
+    keep_id: str = Field(min_length=1, max_length=100, description="Entity that survives")
+    merge_ids: list[str] = Field(min_length=1, max_length=20, description="Entities folded into keep_id")
+
+
+class RelationshipCreate(BaseModel):
+    source_id: str = Field(min_length=1, max_length=100)
+    type: str = Field(min_length=1, max_length=40)
+    target_id: str = Field(min_length=1, max_length=100)
+    evidence: str | None = Field(default=None, max_length=1000)
+
+
+class RelationshipRef(BaseModel):
+    source_id: str = Field(min_length=1, max_length=100)
+    type: str = Field(min_length=1, max_length=40)
+    target_id: str = Field(min_length=1, max_length=100)
+
+
+class EditedEntity(BaseModel):
+    id: str
+    name: str
+    type: str
+    description: str = ""
+    aliases: list[str] = Field(default_factory=list)

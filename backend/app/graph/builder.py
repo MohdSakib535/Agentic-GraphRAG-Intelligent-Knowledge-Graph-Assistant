@@ -23,7 +23,7 @@ class GraphBuilder:
 
     def reset_document(self, tenant_id: str, document_id: str) -> None:
         """Remove a previous ingestion of this document (idempotent retries / re-processing)."""
-        self.writer.delete_document(tenant_id, document_id)
+        self.writer.delete_document(tenant_id, document_id, keep_curated=True)
 
     def build(
         self,
@@ -53,6 +53,7 @@ class GraphBuilder:
             for r in resolution.relationships
         ]
         n_rels = self.writer.upsert_relationships(tenant_id, document_id, rel_rows)
+        self.writer.prune_orphans(tenant_id)
         return GraphBuildStats(n_chunks, n_entities, n_rels, n_mentions)
 
     def index_embeddings(self, tenant_id: str, chunk_ids: list[str], embeddings: list[list[float]]) -> int:

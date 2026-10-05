@@ -79,7 +79,7 @@ class InMemoryGraph:
                 cur["document_ids"].append(document_id)
         return len(rels)
 
-    def delete_document(self, tenant_id: str, document_id: str) -> None:
+    def delete_document(self, tenant_id: str, document_id: str, keep_curated: bool = False) -> None:
         self.delete_document_chunks(tenant_id, document_id)
         self.documents.pop(document_id, None)
         prefix = f"chk_{uuid.UUID(document_id).hex}_"
@@ -98,6 +98,9 @@ class InMemoryGraph:
                 if not e["document_ids"]:
                     del self.entities[eid]
                     self.rels = {k: v for k, v in self.rels.items() if eid not in (k[0], k[2])}
+
+    def prune_orphans(self, tenant_id: str) -> None:
+        return None  # the fake has no curated entities, so delete_document already removed every orphan
 
     def find_by_keys(self, tenant_id: str, keys: list[str]) -> list[dict[str, Any]]:
         return [self._ent_row(e) for e in self.entities.values() if e["tenant_id"] == tenant_id and e["normalized_name"] in keys]

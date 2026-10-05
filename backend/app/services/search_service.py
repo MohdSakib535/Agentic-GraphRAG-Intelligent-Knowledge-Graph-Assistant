@@ -22,7 +22,7 @@ def _fact(row: dict[str, Any]) -> GraphFact:
         source_id=row.get("source_id"), target_id=row.get("target_id"),
         source=row["source"], source_type=row["source_type"], relationship=row["relationship"], target=row["target"],
         target_type=row["target_type"], evidence=row.get("evidence"), chunk_ids=list(row.get("chunk_ids") or []),
-        document_ids=list(row.get("document_ids") or []),
+        document_ids=list(row.get("document_ids") or []), manual=bool(row.get("manual")),
     )
 
 

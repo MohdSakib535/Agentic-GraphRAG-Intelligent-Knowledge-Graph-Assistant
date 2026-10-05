@@ -54,7 +54,8 @@ ON MATCH SET e.description = CASE WHEN coalesce(e.description, '') = '' THEN row
                                    THEN e.document_ids ELSE coalesce(e.document_ids, []) + row.document_id END
 WITH e, row WHERE e.tenant_id = $tenant_id
 SET e.aliases_text = reduce(s = '', a IN coalesce(e.aliases, []) | s + ' ' + a), e.updated_at = datetime()
-SET e:{label}
+// An admin may have re-typed the entity: never re-add the label of the type it no longer has.
+FOREACH (_ IN CASE WHEN e.type = row.type THEN [1] ELSE [] END | SET e:{label})
 RETURN count(e) AS written
 """
 
@@ -92,7 +93,7 @@ MATCH (s:Entity {tenant_id: $tenant_id})-[r]->(t:Entity {tenant_id: $tenant_id})
 WHERE $document_id IN r.document_ids
 SET r.document_ids = [x IN r.document_ids WHERE x <> $document_id],
     r.chunk_ids = [x IN r.chunk_ids WHERE NOT x STARTS WITH $chunk_prefix]
-WITH r WHERE size(r.document_ids) = 0
+WITH r WHERE size(r.document_ids) = 0 AND NOT coalesce(r.manual, false)
 DELETE r
 """
 
@@ -100,14 +101,24 @@ PRUNE_DOCUMENT_ENTITIES = """
 MATCH (e:Entity {tenant_id: $tenant_id})
 WHERE $document_id IN e.document_ids
 SET e.document_ids = [x IN e.document_ids WHERE x <> $document_id]
-WITH e WHERE size(e.document_ids) = 0
+WITH e WHERE size(e.document_ids) = 0 AND NOT ($keep_curated AND coalesce(e.edited, false))
 DETACH DELETE e
 """
 
+# After a re-ingestion: curated entities the new version no longer mentions are dropped.
+PRUNE_ORPHAN_ENTITIES = """
+MATCH (e:Entity {tenant_id: $tenant_id})
+WHERE size(coalesce(e.document_ids, [])) = 0
+DETACH DELETE e
+"""
+
+# ``merged_keys`` ("Type::normalized name") remembers entities an admin renamed or merged away,
+# so re-ingesting a document resolves the old surface form to the surviving entity.
 FIND_ENTITIES_BY_KEYS = """
 MATCH (e:Entity {tenant_id: $tenant_id})
-WHERE e.normalized_name IN $keys
-RETURN e.id AS id, e.name AS name, e.type AS type, e.normalized_name AS normalized_name,
+WHERE e.normalized_name IN $keys OR any(k IN coalesce(e.merged_keys, []) WHERE split(k, '::')[1] IN $keys)
+UNWIND [k IN [e.type + '::' + e.normalized_name] + coalesce(e.merged_keys, []) WHERE split(k, '::')[1] IN $keys] AS key
+RETURN DISTINCT e.id AS id, e.name AS name, split(key, '::')[0] AS type, split(key, '::')[1] AS normalized_name,
        e.description AS description
 """
 
@@ -126,8 +137,9 @@ LIMIT $limit
 # A chunk is visible when its document is not denied; an entity/relationship is visible when at
 # least one *visible* document supports it. Free text that may originate from a denied document
 # (evidence, descriptions, aliases) is withheld whenever any supporting document is denied.
+# Relationships an admin added by hand (``manual``) are visible tenant-wide.
 def _visible(var: str) -> str:
-    return f"any(d IN coalesce({var}.document_ids, []) WHERE NOT d IN $denied)"
+    return f"(coalesce({var}.manual, false) OR any(d IN coalesce({var}.document_ids, []) WHERE NOT d IN $denied))"
 
 
 def _clean(var: str) -> str:
@@ -144,7 +156,7 @@ def _rel_columns(s: str = "s", r: str = "r", t: str = "t") -> str:
         f"{t}.type AS target_type, CASE WHEN {_clean(r)} THEN {r}.evidence END AS evidence, "
         f"{_safe_chunk_ids(r)} AS chunk_ids, "
         f"[d IN coalesce({r}.document_ids, []) WHERE NOT d IN $denied] AS document_ids, "
-        f"{s}.id AS source_id, {t}.id AS target_id"
+        f"{s}.id AS source_id, {t}.id AS target_id, coalesce({r}.manual, false) AS manual"
     )
 
 
@@ -277,7 +289,7 @@ MATCH (a:Entity {{tenant_id: $tenant_id}}), (b:Entity {{tenant_id: $tenant_id}})
 WHERE a.id IN $entity_ids AND b.id IN $entity_ids AND a.id < b.id
 MATCH p = allShortestPaths((a)-[*..{{max_hops}}]-(b))
 WHERE all(n IN nodes(p) WHERE n.tenant_id = $tenant_id AND n:Entity)
-  AND all(x IN relationships(p) WHERE any(d IN coalesce(x.document_ids, []) WHERE NOT d IN $denied))
+  AND all(x IN relationships(p) WHERE {_visible("x")})
 WITH p LIMIT $limit
 UNWIND relationships(p) AS r
 WITH DISTINCT r, length(p) AS hops
@@ -346,7 +358,7 @@ EXPAND_SUBGRAPH = f"""
 MATCH (center:Entity {{id: $entity_id, tenant_id: $tenant_id}})
 MATCH p = (center)-[*1..{{depth}}]-(n:Entity {{tenant_id: $tenant_id}})
 WHERE all(x IN nodes(p) WHERE x:Entity AND x.tenant_id = $tenant_id)
-  AND all(x IN relationships(p) WHERE any(d IN coalesce(x.document_ids, []) WHERE NOT d IN $denied))
+  AND all(x IN relationships(p) WHERE {_visible("x")})
 WITH p LIMIT $limit
 UNWIND relationships(p) AS r
 WITH DISTINCT r

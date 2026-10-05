@@ -139,12 +139,17 @@ class GraphWriter:
                 written += out[0]["written"] if out else 0
         return written
 
-    def delete_document(self, tenant_id: str, document_id: str) -> None:
+    def delete_document(self, tenant_id: str, document_id: str, keep_curated: bool = False) -> None:
+        """``keep_curated`` (re-ingestion) keeps admin-edited entities until :meth:`prune_orphans` runs, so
+        renames, merges and hand-added relationships survive re-processing."""
         tenant_id = _require_tenant(tenant_id)
         chunk_prefix = f"chk_{uuid.UUID(document_id).hex}_"
         self._write(Q.DELETE_DOCUMENT, tenant_id=tenant_id, document_id=document_id)
         self._write(Q.PRUNE_DOCUMENT_RELATIONSHIPS, tenant_id=tenant_id, document_id=document_id, chunk_prefix=chunk_prefix)
-        self._write(Q.PRUNE_DOCUMENT_ENTITIES, tenant_id=tenant_id, document_id=document_id)
+        self._write(Q.PRUNE_DOCUMENT_ENTITIES, tenant_id=tenant_id, document_id=document_id, keep_curated=keep_curated)
+
+    def prune_orphans(self, tenant_id: str) -> None:
+        self._write(Q.PRUNE_ORPHAN_ENTITIES, tenant_id=_require_tenant(tenant_id))
 
     # EntityLookup protocol (used by the resolver)
     def find_by_keys(self, tenant_id: str, keys: list[str]) -> list[dict[str, Any]]:

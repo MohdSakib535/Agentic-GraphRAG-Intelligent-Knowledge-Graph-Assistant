@@ -6,13 +6,13 @@ import asyncio
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Query, status
 from sqlalchemy import select
 
 from app.connectors.google_drive import GoogleDriveClient, parse_service_account
 from app.core.access import normalize_groups
 from app.core.crypto import encrypt
-from app.core.dependencies import ContainerDep, CurrentUser, DBSession, SettingsDep, require_admin
+from app.core.dependencies import AdminDep, ContainerDep, DBSession, SettingsDep
 from app.core.errors import NotFoundError, RedisUnavailable
 from app.models.connector import Connector
 from app.models.document import Document
@@ -22,7 +22,6 @@ from app.services.audit import record_audit
 from app.services.document_service import DocumentService
 
 router = APIRouter(prefix="/connectors", tags=["Connectors"], responses=ERROR_RESPONSES)
-AdminDep = Annotated[CurrentUser, Depends(require_admin)]
 
 
 async def _get(db: DBSession, tenant_id: uuid.UUID, connector_id: uuid.UUID) -> Connector:

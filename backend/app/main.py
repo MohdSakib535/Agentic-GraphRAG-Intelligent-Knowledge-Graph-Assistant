@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from app.api import auth, chat, connectors, datasets, documents, evaluation, health, search
+from app.api import auth, chat, connectors, datasets, documents, evaluation, graph_admin, health, search
 from app.core.config import Settings, get_settings
 from app.core.container import build_container, open_postgres_checkpointer
 from app.core.errors import AppError, RateLimitExceeded, error_payload
@@ -153,14 +153,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=False,  # bearer tokens, no cookies
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
         expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After"],
         max_age=600,
     )
     register_exception_handlers(app)
     for router in (health.router, auth.router, documents.router, chat.router, search.router, datasets.router,
-                   connectors.router, evaluation.router):
+                   graph_admin.router, connectors.router, evaluation.router):
         app.include_router(router, prefix=settings.api_prefix)
     return app
 

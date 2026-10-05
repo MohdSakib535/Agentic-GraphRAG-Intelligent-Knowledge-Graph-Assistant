@@ -9,13 +9,12 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 
 from app.core.dependencies import (
     AccessScopeDep,
+    AdminDep,
     ContainerDep,
-    CurrentUser,
     CurrentUserDep,
     DBSession,
     RateLimit,
     SettingsDep,
-    require_admin,
 )
 from app.core.errors import ValidationFailed
 from app.ingestion.loader import read_limited, validate_upload
@@ -32,7 +31,6 @@ from app.schemas.document import (
 from app.services.document_service import DocumentService
 
 router = APIRouter(prefix="/documents", tags=["Documents"], responses=ERROR_RESPONSES)
-AdminDep = Annotated[CurrentUser, Depends(require_admin)]
 
 
 def _parse_groups(raw: str | None) -> list[str]:
