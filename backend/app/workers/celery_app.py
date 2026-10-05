@@ -25,10 +25,18 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     task_default_queue="default",
     task_routes={"app.workers.tasks.ingest_document": {"queue": "ingestion"},
+                 "app.workers.tasks.sync_connector": {"queue": "ingestion"},
                  "app.workers.tasks.run_evaluation": {"queue": "evaluation"}},
     task_always_eager=settings.celery_task_always_eager,
     task_eager_propagates=False,
 )
+
+
+if settings.connector_sync_interval_minutes > 0:
+    celery_app.conf.beat_schedule = {
+        "sync-connectors": {"task": "app.workers.tasks.sync_all_connectors",
+                            "schedule": settings.connector_sync_interval_minutes * 60.0},
+    }
 
 
 @after_setup_logger.connect

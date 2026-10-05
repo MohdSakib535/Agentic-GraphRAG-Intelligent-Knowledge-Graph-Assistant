@@ -147,3 +147,24 @@ def run_evaluation(run_id: str) -> dict[str, Any]:
     from app.services.evaluation_service import execute_evaluation_run
 
     return asyncio.run(execute_evaluation_run(uuid.UUID(run_id)))
+
+
+@celery_app.task(name="app.workers.tasks.sync_connector")
+def sync_connector(connector_id: str) -> dict[str, Any]:
+    from app.connectors.sync import sync_google_drive
+
+    return sync_google_drive(uuid.UUID(connector_id))
+
+
+@celery_app.task(name="app.workers.tasks.sync_all_connectors")
+def sync_all_connectors() -> int:
+    """Periodic (Celery beat) incremental sync of every connector."""
+    from sqlalchemy import select
+
+    from app.models.connector import Connector
+
+    with sync_session_scope() as db:
+        ids = [str(c) for c in db.execute(select(Connector.id).where(Connector.status != "RUNNING")).scalars()]
+    for connector_id in ids:
+        sync_connector.delay(connector_id)
+    return len(ids)

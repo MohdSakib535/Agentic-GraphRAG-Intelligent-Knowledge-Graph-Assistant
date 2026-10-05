@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     google_drive_api_url: str = "https://www.googleapis.com/drive/v3"
     google_token_url: str = "https://oauth2.googleapis.com/token"
     connector_max_files_per_sync: int = 500
+    connector_sync_interval_minutes: int = 60  # Celery beat periodic sync (0 disables)
 
     # --------------------------------------------------- Google login (OIDC)
     google_client_id: str | None = None
