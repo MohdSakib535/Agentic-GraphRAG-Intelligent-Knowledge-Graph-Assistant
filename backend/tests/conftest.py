@@ -96,3 +96,25 @@ def container(sample_graph: InMemoryGraph, test_settings: Settings):
 
     return build_container(test_settings, None, None, checkpointer=InMemorySaver(),
                            embedder=HashingEmbedder(test_settings.embedding_dimensions), reader=sample_graph)
+
+
+@pytest.fixture(scope="session")
+def stub_server():
+    from openai_stub import StubServer
+
+    with StubServer(dims=256) as server:
+        yield server
+
+
+@pytest.fixture
+def stub_llm(stub_server, test_settings):
+    from pydantic import SecretStr
+
+    from app.llm.client import LLMClient
+
+    for var in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+        os.environ.pop(var, None)
+    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+    settings = test_settings.model_copy(update={"llm_provider": "openai", "openai_api_key": SecretStr("sk-stub"),
+                                                "openai_base_url": stub_server.base_url, "llm_timeout_seconds": 20})
+    return LLMClient(settings)

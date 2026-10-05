@@ -60,6 +60,16 @@ def _structured(schema_name: str, prompt: str) -> dict[str, Any]:
     if schema_name == "_GeneratedCypher":
         return {"cypher": "MATCH (p:Person)-[:MANAGES]->(x:Project) RETURN p.name AS person, x.name AS project",
                 "explanation": "stub"}
+    if schema_name == "_SQLPlan":
+        # First attempt is deliberately unsafe so the planner's validation + self-repair path is exercised.
+        if "previous SQL failed" not in prompt:
+            return {"sql": "SELECT * FROM read_csv('/etc/passwd')", "explanation": "bad"}
+        return {"sql": 'SELECT "department", avg("annual_salary") AS avg_salary FROM data GROUP BY 1 ORDER BY 2 DESC',
+                "explanation": "Average salary per department"}
+    if schema_name == "_Answer":
+        rows = re.search(r"Rows \(\d+\+?(?:, truncated)?\):\n(.+?)(?:\n|$)", prompt)
+        top = rows.group(1).split(" | ") if rows else ["?", "?"]
+        return {"answer": f"{top[0]} has the highest average salary ({top[1]})."}
     if schema_name == "JudgeVerdict":
         return {"correctness": 0.8, "faithfulness": 0.9, "reasoning": "stub judge"}
     if schema_name == "_SameEntity":

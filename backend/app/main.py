@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from app.api import auth, chat, documents, evaluation, health, search
+from app.api import auth, chat, datasets, documents, evaluation, health, search
 from app.core.config import Settings, get_settings
 from app.core.container import build_container, open_postgres_checkpointer
 from app.core.errors import AppError, RateLimitExceeded, error_payload
@@ -124,6 +124,7 @@ TAGS = [
     {"name": "Documents", "description": "Upload and manage PDF/DOCX/TXT/MD documents (async ingestion)."},
     {"name": "Chat", "description": "Agentic GraphRAG question answering (JSON or SSE streaming)."},
     {"name": "Search & Graph", "description": "Direct vector/graph/hybrid retrieval and graph exploration."},
+    {"name": "Chat with CSV", "description": "Upload CSV datasets and ask analytical questions (validated SQL)."},
     {"name": "Evaluation", "description": "Benchmark Vector RAG vs GraphRAG vs Agentic GraphRAG."},
     {"name": "Health", "description": "Probes and public configuration."},
 ]
@@ -157,7 +158,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_age=600,
     )
     register_exception_handlers(app)
-    for router in (health.router, auth.router, documents.router, chat.router, search.router, evaluation.router):
+    for router in (health.router, auth.router, documents.router, chat.router, search.router, datasets.router,
+                   evaluation.router):
         app.include_router(router, prefix=settings.api_prefix)
     return app
 

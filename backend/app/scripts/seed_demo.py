@@ -72,8 +72,31 @@ def main() -> None:
                                 stage_history=[], started_at=now, finished_at=now))
         print(f"ingested {path.name}: {result.chunks} chunks, {result.entities} entities, "
               f"{result.relationships} relationships")
+    seed_datasets(settings, tenant_id, user_id)
     invalidate_tenant_cache_sync(settings.redis_url, str(tenant_id))
     print(f"Demo ready - log in as {DEMO_EMAIL} / {DEMO_PASSWORD}")
+
+
+def seed_datasets(settings, tenant_id, user_id) -> None:  # noqa: ANN001
+    """Load the sample CSV(s) for Chat with CSV."""
+    from app.datasets.store import DatasetStorage, profile_csv
+    from app.models.dataset import Dataset
+
+    folder = Path(__file__).resolve().parents[2] / "data" / "datasets"
+    for path in sorted(folder.glob("*.csv")):
+        profiled = profile_csv(path.name, path.read_bytes(), settings.max_upload_bytes, settings.dataset_max_rows)
+        with sync_session_scope() as db:
+            if db.execute(select(Dataset.id).where(Dataset.tenant_id == tenant_id,
+                                                   Dataset.checksum == profiled.checksum)).first():
+                print(f"skip dataset {path.name} (already loaded)")
+                continue
+            dataset_id = uuid.uuid4()
+            stored = DatasetStorage(settings.upload_dir).save(str(tenant_id), str(dataset_id), profiled.parquet_bytes)
+            db.add(Dataset(id=dataset_id, tenant_id=tenant_id, uploaded_by=user_id, name=profiled.name,
+                           filename=profiled.filename, checksum=profiled.checksum, storage_path=stored,
+                           size_bytes=path.stat().st_size, row_count=profiled.row_count, columns=profiled.columns,
+                           access_groups=[]))
+        print(f"loaded dataset {path.name}: {profiled.row_count} rows")
 
 
 if __name__ == "__main__":

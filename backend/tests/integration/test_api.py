@@ -310,3 +310,38 @@ def test_feedback_and_conversation_export(client, tenant_a) -> None:
     assert "Who manages Project Gamma?" in text and "Priya" in text
     assert client.get(f"{API}/chat/conversations/{good['conversation_id']}/export",
                       headers=auth(other)).status_code == 404
+
+
+def test_chat_with_csv(client) -> None:
+    admin = register(client, "Data Corp")
+    csv_bytes = (SAMPLES.parent / "datasets" / "employees.csv").read_bytes()
+    up = client.post(f"{API}/datasets/upload", headers=auth(admin), files={"file": ("employees.csv", csv_bytes, "text/csv")})
+    assert up.status_code == 201, up.text
+    ds = up.json()
+    assert ds["row_count"] == 12 and any(c["name"] == "annual_salary" for c in ds["columns"])
+    assert client.post(f"{API}/datasets/upload", headers=auth(admin),
+                       files={"file": ("copy.csv", csv_bytes, "text/csv")}).status_code == 409
+    detail = client.get(f"{API}/datasets/{ds['id']}", headers=auth(admin)).json()
+    assert len(detail["preview_rows"]) == 12 and detail["preview_columns"][0] == "employee_name"
+    answer = client.post(f"{API}/datasets/{ds['id']}/query", headers=auth(admin),
+                         json={"question": "Which department has the highest average salary?"}).json()
+    assert answer["answer"].startswith("Engineering") and answer["planner"] == "rules"
+    assert answer["sql"].startswith("SELECT") and answer["rows"] == [["Engineering", 138000.0]]
+    grouped = client.post(f"{API}/datasets/{ds['id']}/query", headers=auth(admin),
+                          json={"question": "average salary by city"}).json()
+    assert grouped["chart"]["type"] == "bar" and grouped["row_count"] == 5
+    edited = client.post(f"{API}/datasets/{ds['id']}/query", headers=auth(admin),
+                         json={"question": "custom", "sql": "SELECT count(*) AS n FROM data WHERE city = 'Pune'"}).json()
+    assert edited["rows"] == [[3]] and edited["planner"] == "sql"
+    evil = client.post(f"{API}/datasets/{ds['id']}/query", headers=auth(admin),
+                       json={"question": "x", "sql": "SELECT * FROM read_csv('/etc/passwd')"})
+    assert evil.status_code == 422 and evil.json()["error"]["code"] == "SQL_REJECTED"
+    unknown = client.post(f"{API}/datasets/{ds['id']}/query", headers=auth(admin), json={"question": "weather tomorrow?"})
+    assert unknown.status_code == 422 and unknown.json()["error"]["code"] == "QUESTION_NOT_UNDERSTOOD"
+    # Tenant isolation and CSV redirect from the document uploader.
+    other = register(client, "Other Data Corp")
+    assert client.get(f"{API}/datasets/{ds['id']}", headers=auth(other)).status_code == 404
+    assert client.get(f"{API}/datasets", headers=auth(other)).json() == []
+    redirect = client.post(f"{API}/documents/upload", headers=auth(admin), files={"file": ("e.csv", csv_bytes, "text/csv")})
+    assert redirect.status_code == 415 and redirect.json()["error"]["code"] == "USE_DATASETS_FOR_TABULAR_DATA"
+    assert client.delete(f"{API}/datasets/{ds['id']}", headers=auth(admin)).status_code == 204
