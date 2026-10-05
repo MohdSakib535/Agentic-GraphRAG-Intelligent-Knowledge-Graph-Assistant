@@ -17,7 +17,8 @@ and abstains with *"I don't have enough information in the uploaded knowledge ba
 | **GenAI** | LangGraph (agent + Postgres checkpointing), LangChain, OpenAI-compatible LLM & embeddings |
 | **Data** | Neo4j 5 (knowledge graph, HNSW vector index, full-text index), PostgreSQL 16, Redis 7 |
 | **Frontend** | Streamlit (no React) talking only to the FastAPI API |
-| **Ops** | Docker Compose with health checks, structured JSON logs, request ids |
+| **Analytics** | Chat with CSV: DuckDB, AST-validated read-only SQL in a sandbox |
+| **Ops** | Docker Compose with health checks, structured JSON logs, request ids, OpenTelemetry, Prometheus + Grafana |
 
 ---
 
@@ -36,7 +37,7 @@ and abstains with *"I don't have enough information in the uploaded knowledge ba
 
 ```bash
 cp .env.example .env            # optionally set OPENAI_API_KEY; change the passwords and JWT secret
-docker compose up --build       # backend, celery-worker, frontend, postgres, neo4j, redis
+docker compose up --build       # backend, celery-worker, celery-beat, frontend, postgres, neo4j, redis
 make seed                       # optional: demo user demo@techcorp.com / DemoPassw0rd + sample documents
 ```
 
@@ -113,7 +114,41 @@ flowchart TB
 * SSE streaming of agent progress, tokens, citations and verification.
 * Streamlit UI: login/register, dashboard, documents with live pipeline progress, ChatGPT-style chat with agent trace,
   interactive knowledge graph explorer, evaluation dashboard, settings.
-* Evaluation harness (38 questions, 6 categories) comparing Vector RAG vs GraphRAG vs Agentic GraphRAG.
+* Evaluation harness (38 questions, 6 categories) comparing Vector RAG vs GraphRAG vs Agentic GraphRAG, with an
+  optional **LLM-as-judge** (correctness + faithfulness) when an LLM is configured.
+
+### Added in `dev-v1`
+
+| Feature | What it does | Where |
+|---|---|---|
+| **Document-level permissions** | Documents (and datasets, connector syncs) can be restricted to *access groups*. A user sees a document, its chunks, and every entity/relationship it supports only if they share a group (admins see all). Enforced inside every Cypher read (fail-closed), the agent, search, graph explorer, caches and Text2Cypher (disabled for restricted users). | `core/access.py`, `graph/queries.py`, Documents & Users pages |
+| **Redis answer + embedding cache** | First-turn answers cached per tenant × permission fingerprint × model; query embeddings cached for 24 h. Invalidated on ingestion, deletion, ACL change and graph edits. | `services/chat_service.py`, `retrieval/vector.py` |
+| **LLM-as-judge evaluation** | `EVAL_LLM_JUDGE=true` scores correctness and faithfulness with the LLM (abstentions still scored deterministically). | `services/evaluation_service.py` |
+| **OCR for scanned PDFs** | Pages with no text layer are OCR'd with Tesseract (`OCR_LANGUAGE`, `OCR_DPI`). | `ingestion/parser.py` |
+| **Table-aware chunking** | PDF/DOCX/Markdown tables become dedicated chunks with the header repeated on every split; table rows yield graph facts (e.g. *Manager* → `MANAGES`). | `ingestion/chunker.py`, `relationship_extractor.py` |
+| **Answer feedback** | 👍/👎 on every answer; admins review feedback and export down-voted questions in the evaluation-dataset format. | Chat & Users pages, `/chat/messages/{id}/feedback` |
+| **Export** | Conversations as Markdown or PDF, with strategy, confidence and citations. | `/chat/conversations/{id}/export` |
+| **Chat with CSV** | Upload a CSV; questions become one validated, read-only SQL query run in a sandboxed DuckDB. Answer, SQL (editable), table, and chart are returned. | `app/datasets/`, *Chat with CSV* page |
+| **Google Drive connector** | Sync a shared folder (service account, key Fernet-encrypted at rest) incrementally: new and changed files are ingested, files deleted in Drive are removed. Hourly via `celery-beat`. | `app/connectors/`, *Connectors* page |
+| **Graph curation** | Admins rename, re-type, describe, merge, and delete entities, and add (schema-validated) or delete relationships. Edits are audited, invalidate caches, and survive re-ingestion. | `graph/editor.py`, Knowledge Graph page |
+| **Observability** | OpenTelemetry traces (FastAPI, SQLAlchemy, Redis, httpx, Celery, one span per agent node), Prometheus `/metrics`, a provisioned Grafana dashboard, LangSmith pass-through. | `core/telemetry.py`, `observability/` |
+| **Sign in with Google** | OIDC authorization code + PKCE. Workspace domains join their tenant automatically; existing accounts are linked by verified email. | `services/google_login.py` |
+
+#### Chat with CSV vs. uploading a CSV as a document
+
+Uploading a `.csv` to **Documents** is rejected with `USE_DATASETS_FOR_TABULAR_DATA`, by design. RAG retrieves a few
+text chunks, so it cannot correctly answer *"average salary by department"* or *"top 5 cities"* over thousands of
+rows. Tables go to **Chat with CSV** instead:
+
+1. The CSV is profiled (types, nulls, distinct values, ranges, top values) and stored as Parquet.
+2. A planner turns the question into **one** SQL `SELECT` over a table named `data`. With an LLM, it uses the
+   schema and profile and gets one self-repair attempt. Offline, a rule-based planner handles counts, sums, averages,
+   min/max, group-by, top-N, filters and time buckets.
+3. The SQL is parsed with DuckDB's own parser and rejected unless it is a single SELECT that reads only `data` (or its
+   own CTEs). Table functions (`read_csv`, …), file and network access, and dangerous functions are blocked.
+4. It runs in an in-memory DuckDB with external access disabled, configuration locked, a timeout and a row limit.
+
+You get the answer, the SQL (editable and re-runnable), the result table (downloadable), and a chart.
 
 ## Folder structure
 
@@ -122,36 +157,43 @@ flowchart TB
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 FastAPI app: middleware, error handlers, routers, lifespan
-│   │   ├── core/                   config, logging (JSON + redaction), security (JWT/argon2), dependencies, errors, container
-│   │   ├── api/                    auth, documents, chat (JSON + SSE), search & graph, evaluation, health
+│   │   ├── core/                   config, logging (JSON + redaction), security (JWT/argon2), dependencies, errors, container,
+│   │   │                           access (document ACL scopes), crypto (Fernet), metrics (Prometheus), telemetry (OpenTelemetry)
+│   │   ├── api/                    auth (+ Google OIDC), documents, chat (JSON + SSE, feedback, export), search & graph,
+│   │   │                           graph_admin (curation), datasets, connectors, evaluation, health (+ /metrics)
 │   │   ├── models/                 SQLAlchemy models: tenant, user (+refresh tokens), document, job, conversation, message, evaluation, audit
 │   │   ├── schemas/                Pydantic request/response models
 │   │   ├── db/                     postgres (async + sync engines), neo4j drivers & schema, redis (tenant cache, rate limiter)
 │   │   ├── ingestion/              loader, parser, chunker, metadata, entity/relationship extraction, entity resolver, embedding, pipeline
-│   │   ├── graph/                  schema (whitelists), queries (Cypher), repository, builder, cypher_validator, text2cypher
+│   │   ├── graph/                  schema (whitelists), queries (Cypher), repository, builder, editor (curation), cypher_validator, text2cypher
+│   │   ├── datasets/               Chat with CSV: store (profiling, Parquet), planner (rules + LLM), sql_safety (validator + sandbox), service
+│   │   ├── connectors/             google_drive (service-account client), sync (incremental)
 │   │   ├── retrieval/              vector, graph, hybrid, reranker, retriever (facade + cache), query_parsing, types
 │   │   ├── agents/                 state, workflow (LangGraph), router (query analyzer), nodes/, tools/
 │   │   ├── llm/                    OpenAI-compatible client: structured output, streaming, timeouts, usage tracking
-│   │   ├── services/               document, chat, search, evaluation, auth, audit
-│   │   ├── workers/                celery_app, tasks (ingestion, evaluation)
+│   │   ├── services/               document, chat, search, evaluation, auth, google_login, feedback, export, audit
+│   │   ├── workers/                celery_app (+ beat schedule), tasks (ingestion, evaluation, connector sync)
 │   │   ├── scripts/                generate_samples, seed_demo
 │   │   └── utils/                  text, tokens, ids
 │   ├── alembic/                    migrations
 │   ├── data/samples/               sample enterprise corpus (PDF, DOCX, MD, TXT)
 │   ├── data/evaluation/            questions.json (38 questions)
-│   ├── tests/                      unit/, integration/, evaluation/, fakes (in-memory graph), openai_stub
-│   ├── docker/entrypoint.sh        api | worker | migrate | seed
+│   ├── data/datasets/              employees.csv (Chat with CSV demo)
+│   ├── tests/                      unit/, integration/, evaluation/, fakes (in-memory graph), openai_stub, google_stub
+│   ├── docker/entrypoint.sh        api | worker | beat | migrate | seed
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── frontend/
 │   ├── app.py                      entry point: login/register, st.navigation
-│   ├── pages/                      1_Dashboard, 2_Documents, 3_Chat, 4_Knowledge_Graph, 5_Evaluation, 6_Settings
+│   ├── pages/                      1_Dashboard, 2_Documents, 3_Chat, 4_Knowledge_Graph, 5_Evaluation, 6_Settings,
+│   │                               7_Chat_with_CSV, 8_Users (admin), 9_Connectors (admin)
 │   ├── components/                 chat, citations, graph (pyvis), agent_status
 │   ├── services/api_client.py      the only way the UI talks to the backend
 │   ├── utils/session.py            session-state auth helpers
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── neo4j/                          schema.cypher, seed.cypher
+├── observability/                  prometheus.yml, grafana provisioning + dashboard
 ├── tests/e2e/                      system tests against the running docker stack
 ├── docker-compose.yml
 ├── .env.example
@@ -204,13 +246,26 @@ All configuration is environment-based (`backend/app/core/config.py`); secrets a
 | `RERANKER` | `score` | `none` \| `score` \| `cross_encoder` (optional `sentence-transformers`) |
 | `AGENT_MAX_RETRIES` | `3` | Query-rewrite budget |
 | `CORS_ORIGINS` | `http://localhost:8501` | Comma-separated; wildcards rejected in production |
+| `ANSWER_CACHE_ENABLED` / `ANSWER_CACHE_TTL_SECONDS` / `EMBEDDING_CACHE_TTL_SECONDS` | `true` / `1800` / `86400` | Redis answer & query-embedding caches |
+| `EVAL_LLM_JUDGE` | `true` | Use the LLM as evaluation judge when one is configured |
+| `OCR_ENABLED` / `OCR_LANGUAGE` / `OCR_DPI` | `true` / `eng` / `300` | OCR of image-only PDF pages (needs Tesseract; image build arg `INSTALL_OCR=true`) |
+| `DATASET_MAX_ROWS` / `DATASET_QUERY_TIMEOUT_SECONDS` / `DATASET_RESULT_LIMIT` | | Chat-with-CSV limits |
+| `ENCRYPTION_KEY` | derived from `JWT_SECRET_KEY` | Fernet key for connector credentials (set explicitly in production) |
+| `CONNECTOR_SYNC_INTERVAL_MINUTES` | `60` | Scheduled Drive sync (`0` disables `celery-beat` scheduling) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | – | Enables *Sign in with Google* |
+| `GOOGLE_REDIRECT_URI` | `http://localhost:8000/api/v1/auth/google/callback` | Must be registered in the Google OAuth client |
+| `GOOGLE_ALLOWED_DOMAINS` | – | Comma-separated email / Workspace domains allowed to sign in (empty = any) |
+| `FRONTEND_URL` / `PUBLIC_API_URL` | `http://localhost:8501` / `http://localhost:8000/api/v1` | Browser-facing URLs for the Google sign-in round trip |
+| `OTEL_ENABLED` / `OTEL_EXPORTER_OTLP_ENDPOINT` | `false` / `http://jaeger:4318` | OpenTelemetry traces (OTLP/HTTP) |
+| `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / – | Prometheus `/metrics`; optional bearer token |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | `false` | LangChain/LangGraph traces to LangSmith (sends prompts, including document excerpts, to LangSmith; opt in deliberately) |
 
 Switching embedding providers changes vector dimensions; re-create the Neo4j vector index (or use a fresh volume)
 and re-ingest when you do.
 
 ## Docker setup
 
-`docker compose up --build` starts six services with health checks and ordered startup:
+`docker compose up --build` starts seven services with health checks and ordered startup:
 
 | Service | Image | Health check | Depends on |
 |---|---|---|---|
@@ -219,15 +274,26 @@ and re-ingest when you do.
 | `redis` | redis:7-alpine (AOF on) | `redis-cli ping` | – |
 | `backend` | ./backend (runs `alembic upgrade head`, then uvicorn) | `/api/v1/health/ready` (checks all 3 stores) | postgres, neo4j, redis healthy |
 | `celery-worker` | ./backend (`worker` role) | `celery inspect ping` | backend healthy |
+| `celery-beat` | ./backend (`beat` role) — scheduled connector syncs | schedule file present | backend healthy |
 | `frontend` | ./frontend (Streamlit) | `/_stcore/health` | backend healthy |
 
 Uploads are stored on a named volume shared by `backend` and `celery-worker`. Containers run as a non-root user.
 
+**Observability profile:** `docker compose --profile observability up -d` adds Jaeger (http://localhost:16686),
+Prometheus (http://localhost:9090) and Grafana (http://localhost:3000, dashboard *Agentic GraphRAG – Overview*:
+request rate, 5xx ratio, chat p95, cache hit ratio, latency by route, turns by strategy, tokens, rewrites, ingestion
+jobs, CSV queries, feedback). Set `OTEL_ENABLED=true` to send traces. Metric labels are bounded (route templates,
+strategy, status), never tenant ids, users or text. The API runs Prometheus in multiprocess mode across uvicorn workers.
+
+**No Tesseract mirror reachable?** Build with `INSTALL_OCR=false docker compose up --build`; scanned pages are then
+skipped and *Settings* shows OCR as off.
+
 ## PostgreSQL setup
 
-Schema is managed by Alembic (`backend/alembic/versions/0001_initial_schema.py`) and applied automatically when the
+Schema is managed by Alembic (`0001_initial_schema.py`, `0002_features.py`) and applied automatically when the
 backend starts (`alembic upgrade head`; also `make migrate`). Tables: `tenants`, `users`, `refresh_tokens`,
-`documents`, `ingestion_jobs`, `conversations`, `messages`, `evaluation_runs`, `evaluation_results`, `audit_logs`, plus
+`documents`, `ingestion_jobs`, `conversations`, `messages`, `message_feedback`, `datasets`, `connectors`,
+`evaluation_runs`, `evaluation_results`, `audit_logs`, plus
 LangGraph's checkpoint tables (created by `AsyncPostgresSaver.setup()`). All tenant-owned tables index `tenant_id`;
 `documents` has a `(tenant_id, checksum)` unique constraint for de-duplication.
 
@@ -264,6 +330,15 @@ Interactive docs at **`/docs`** (Swagger, with descriptions and examples) and `/
 | GET | `/graph/stats` · `/graph/entities` · `/graph/entities/{id}` · `/graph/subgraph` | Graph explorer |
 | POST / GET | `/evaluation/run` · `/evaluation/results` · `/evaluation/dataset` | Benchmark |
 | GET | `/health` · `/health/ready` · `/settings` | Probes · public (non-secret) config |
+| GET / PATCH | `/auth/users` · `/auth/users/{id}` | Admin: list users · change role, groups, active |
+| GET | `/auth/providers` · `/auth/google/login` · `/auth/google/callback` · POST `/auth/google/exchange` | Sign in with Google (OIDC + PKCE, single-use code) |
+| PUT | `/documents/{id}/access` | Admin: set a document's access groups |
+| GET | `/chat/conversations/{id}/export?format=markdown\|pdf` | Export a conversation |
+| PUT / DELETE / GET | `/chat/messages/{id}/feedback` · `/chat/feedback` · `/chat/feedback/evaluation-questions` | 👍/👎 · admin review · export as eval items |
+| POST / GET / DELETE | `/datasets/upload` · `/datasets` · `/datasets/{id}` · POST `/datasets/{id}/query` | Chat with CSV |
+| POST / GET / DELETE | `/connectors` · `/connectors/{id}` · POST `/connectors/{id}/sync` | Admin: Google Drive connectors |
+| PATCH / DELETE / POST | `/graph/entities/{id}` · `/graph/entities/merge` · `/graph/relationships` · `/graph/relationships/delete` · GET `/graph/schema` | Admin: graph curation |
+| GET | `/metrics` (root, not under `/api/v1`) | Prometheus exposition |
 
 `POST /api/v1/chat` → `{"conversation_id": "...", "message": "Which projects use Kafka?"}` returns
 `answer, sources[], retrieval_strategy, confidence` plus `graph_evidence, retrieved_chunks, trace, verification,
@@ -414,7 +489,14 @@ consistent `APIError`, transparent token refresh, SSE parsing). Tokens live only
 | Chat | `st.chat_message`/`st.chat_input`, live agent status (`st.status`), streamed tokens, answer, expandable sources, graph evidence, retrieved chunks, strategy, confidence and an agent trace |
 | Knowledge Graph | Interactive pyvis/vis.js graph (self-contained, sandboxed `data:` iframe), entity search, details, neighbours, relationships, source documents |
 | Evaluation | Run benchmarks; accuracy, faithfulness, context relevance, recall, latency, tokens; per-system and per-category charts |
-| Settings | Effective non-secret configuration and service health |
+| Chat with CSV | Upload CSVs, column profile + preview, ask questions, see answer, chart, table and the SQL; edit & re-run SQL |
+| Settings | Effective non-secret configuration, feature flags and service health |
+| Users & groups *(admin)* | Users, roles, access groups, activation; answer-feedback review and export |
+| Connectors *(admin)* | Connect Google Drive folders, sync now, last-sync statistics, remove |
+
+The login page shows **Sign in with Google** when it is configured. The Chat page adds 👍/👎 per answer and
+Markdown/PDF export. Documents accept access groups on upload (admins can change them later). The Knowledge Graph page
+has a **Curate** panel for admins.
 
 ## Evaluation
 
@@ -463,17 +545,23 @@ pytest tests/e2e                           # (repo root) system tests against th
 
 | Suite | Count | Covers |
 |---|---|---|
-| `backend/tests/unit` | 94 | JWT/argon2/config/redaction, parsing (all 4 formats), upload validation, chunking, entity & relationship extraction, LLM-output validation, entity resolution, Cypher validation (25 attack queries), routing, coreference, grading, verification, RRF/reranking, tenant cache, rate limiter, vector/graph/hybrid retrieval, **agent tests** (VECTOR, GRAPH, HYBRID, multi-hop, unanswerable, query requiring rewrite, retry bound, memory, streaming events, tenant isolation), OpenAI-compatible path |
+| `backend/tests/unit` | 138 | JWT/argon2/config/redaction, parsing (all 4 formats), upload validation, chunking, entity & relationship extraction, LLM-output validation, entity resolution, Cypher validation (25 attack queries), routing, coreference, grading, verification, RRF/reranking, tenant cache, rate limiter, vector/graph/hybrid retrieval, **agent tests** (VECTOR, GRAPH, HYBRID, multi-hop, unanswerable, query requiring rewrite, retry bound, memory, streaming events, tenant isolation), OpenAI-compatible path |
 | `backend/tests/evaluation` | 3 | Dataset coverage, scoring rules, benchmark thresholds (agent ≥ baselines, 100% abstention on unanswerables) |
-| `backend/tests/integration` | 17 | Real PostgreSQL/Neo4j/Redis: auth flow incl. refresh-token reuse detection and logout revocation, error envelope & headers, ingestion stages, graph API, search strategies, chat, memory, SSE, tenant isolation, graph pruning on delete, evaluation run, rate limiting (429 + Retry-After), repository isolation, read-only Text2Cypher |
-| `tests/e2e` | 7 | The §64 flow against `docker compose`: real Celery ingestion of PDF/DOCX/MD/TXT, chunks/entities/relationships/embeddings, VECTOR/GRAPH/HYBRID answers with citations, abstention, memory, SSE, tenant isolation, frontend health, worker-executed evaluation |
+| `backend/tests/integration` | 30 | Real PostgreSQL/Neo4j/Redis: auth flow incl. refresh-token reuse detection and logout revocation, error envelope & headers, ingestion stages, graph API, search strategies, chat, memory, SSE, tenant isolation, graph pruning on delete, evaluation run, rate limiting (429 + Retry-After), repository isolation, read-only Text2Cypher |
+| `tests/e2e` | 10 | The §64 flow against `docker compose`: real Celery ingestion of PDF/DOCX/MD/TXT, chunks/entities/relationships/embeddings, VECTOR/GRAPH/HYBRID answers with citations, abstention, memory, SSE, tenant isolation, frontend health, worker-executed evaluation |
 
 Unit/agent tests run the **real** ingestion pipeline, retrievers and LangGraph agent over an in-memory implementation of
 the graph repository (`tests/fakes.py`), so they are fast and need no services. The OpenAI-compatible path
 (`ChatOpenAI` structured output + streaming, `OpenAIEmbeddings`) is exercised against a local OpenAI-compatible stub
 server (`tests/openai_stub.py`).
 
-Latest run: **114 passed** inside the backend container, **7 passed** end-to-end against the Docker stack.
+`dev-v1` adds tests for document ACLs (agent, search, graph, cache, Cypher), OCR and table chunking, Chat with CSV
+(SQL validator attack cases, planner, sandbox), LLM-judge and LLM error mapping, embedding cache, feedback/export,
+graph curation (incl. survival across re-ingestion), the Google Drive connector and Google sign-in (against local fake
+Google servers that verify the RS256 assertion, PKCE and ID-token checks), agent tracing, and `/metrics`.
+
+Latest run: **171 passed** (unit + evaluation + integration against PostgreSQL/Neo4j/Redis), **10 passed** end-to-end
+against the Docker stack.
 
 ## Security
 
@@ -500,6 +588,18 @@ Latest run: **114 passed** inside the backend container, **7 passed** end-to-end
   document text is never logged (questions are truncated).
 * **UI**: tokens only in server-side session state; graph tooltips HTML-escaped and rendered in an opaque-origin iframe.
 * **Secrets**: environment-only, `.env` git-ignored, production config validation refuses weak JWT secrets.
+* **Document ACLs**: the caller's denied-document set is computed per request and injected into every graph read;
+  reads without a scope fail closed. Free text that could come from a hidden document (evidence, descriptions, aliases)
+  is withheld. Answer-cache keys include the permission fingerprint.
+* **Chat with CSV**: LLM-written SQL is never trusted. It is parsed into DuckDB's AST and must be a single `SELECT` over
+  `data` with no table functions or blocked functions. It runs in a sandbox (no external access, locked config,
+  timeout, row cap).
+* **Connectors**: service-account keys are Fernet-encrypted at rest, never returned by the API or logged; folder
+  access is verified before saving.
+* **Google sign-in**: state, nonce and PKCE stored server-side (single use, 10 min); ID token signature checked against
+  Google's JWKS with audience, issuer, expiry, nonce and `email_verified`; tokens never travel in URLs (single-use
+  2-minute code instead); optional domain allow-list.
+* **Graph curation**: admin-only, schema-validated, one transaction per edit, audited.
 
 ## Scaling
 
@@ -536,8 +636,13 @@ The design targets 10k+ users, millions of chunks and high chat concurrency:
   far less general than LLM extraction, and hashing embeddings are lexical rather than semantic. Use an LLM for real data.
 * The LLM path is verified end-to-end against an OpenAI-compatible stub, not against a live hosted model in this
   repository's CI (no key available); prompt quality with specific models should be evaluated on your data.
-* Evaluation results above are in-sample (see [Evaluation](#evaluation)); correctness is keyword-based, not an LLM judge.
-* Scanned PDFs need OCR (not included). DOCX page numbers are not available (python-docx has no layout), so DOCX
+* Evaluation results above are in-sample (see [Evaluation](#evaluation)); the offline provider scores keyword-based
+  correctness (the LLM judge needs an LLM).
+* Deleted entities/relationships come back if a document that states them is re-processed (renames, merges and manual
+  relationships do persist).
+* The Google Drive connector uses service accounts (folder sharing), not per-user OAuth; Drive permissions are not
+  mirrored into access groups automatically.
+* OCR quality depends on scan quality and the Tesseract language packs installed. DOCX page numbers are not available (python-docx has no layout), so DOCX
   citations reference sections.
 * Uploads are stored on a shared volume; multi-node deployments should use object storage.
 * Neo4j Community has no role-based access control or multi-database; tenant isolation is enforced in the application.
@@ -546,10 +651,10 @@ The design targets 10k+ users, millions of chunks and high chat concurrency:
 
 ## Future improvements
 
-* LLM-as-judge evaluation and a larger, held-out benchmark; regression tracking per release.
+* A larger, held-out benchmark; regression tracking per release.
 * Community detection / graph summaries (Microsoft-style GraphRAG global search) for corpus-level questions.
 * Incremental re-ingestion with chunk diffing; object storage + virus scanning for uploads.
-* OCR for scanned PDFs, table-aware chunking, layout-aware DOCX pagination.
-* Per-tenant quotas and usage billing; SSO/OIDC; fine-grained document ACLs inside a tenant.
-* OpenTelemetry tracing across API → agent → tools → databases; LangSmith integration.
+* Layout-aware DOCX pagination; Excel workbooks in Chat with CSV; joins across datasets.
+* Per-tenant quotas and usage billing; SAML/other OIDC providers; mirroring Drive sharing into access groups.
+* More connectors (SharePoint, Confluence, Notion, S3).
 * Cross-encoder reranking as a separate GPU-backed service.

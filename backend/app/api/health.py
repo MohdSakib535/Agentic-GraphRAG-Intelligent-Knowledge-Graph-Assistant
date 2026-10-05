@@ -48,7 +48,9 @@ async def ready(response: Response) -> dict[str, Any]:
 
 @router.get("/settings", summary="Effective non-secret configuration")
 async def public_settings(user: CurrentUserDep, settings: SettingsDep) -> dict[str, Any]:
-    return settings.public_dict()
+    from app.ingestion.parser import ocr_available
+
+    return {**settings.public_dict(), "ocr_enabled": settings.ocr_enabled and ocr_available()}  # flag AND tesseract
 
 
 @metrics_router.get("/metrics", include_in_schema=False)

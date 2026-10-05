@@ -9,10 +9,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Tesseract powers OCR of scanned PDFs (PyMuPDF calls it for image-only pages).
-RUN apt-get update \
+# Tesseract powers OCR of scanned PDFs (PyMuPDF calls it for image-only pages). INSTALL_OCR=false builds
+# without it (scanned pages are then skipped). Mirrors are fetched over HTTPS; the optional "build_ca"
+# secret (see below) is trusted for this step only.
+ARG INSTALL_OCR=true
+RUN --mount=type=secret,id=build_ca,required=false,mode=0444 \
+    [ "$INSTALL_OCR" != "true" ] || { sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && if [ -s /run/secrets/build_ca ]; then echo 'Acquire::https::CAInfo "/run/secrets/build_ca";' > /etc/apt/apt.conf.d/99build-ca; fi \
+    && apt-get update \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99build-ca; }
 
 COPY requirements.txt .
 # Optional build secret "build_ca": a CA bundle for TLS-intercepting corporate proxies. It is only

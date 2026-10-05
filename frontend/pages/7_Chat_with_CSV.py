@@ -102,7 +102,10 @@ def render_result(result: dict[str, Any], key: str) -> None:
     chart = result.get("chart")
     if chart and not frame.empty and chart["x"] in frame and chart["y"] in frame:
         data = frame.set_index(chart["x"])[[chart["y"]]]
-        st.line_chart(data) if chart["type"] == "line" else st.bar_chart(data)
+        if chart["type"] == "line":
+            st.line_chart(data)
+        else:
+            st.bar_chart(data)
     if not frame.empty:
         st.dataframe(frame, hide_index=True, width="stretch")
         st.download_button("Download result (CSV)", frame.to_csv(index=False).encode(), file_name="result.csv",

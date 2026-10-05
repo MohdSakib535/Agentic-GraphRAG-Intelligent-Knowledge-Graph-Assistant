@@ -150,3 +150,52 @@ def test_evaluation_via_worker(client, tenant) -> None:
     print(json.dumps({k: v for k, v in summary.items() if k != "options"}, indent=1))
     assert summary["agentic_graphrag"]["accuracy"] >= 0.9
     assert summary["agentic_graphrag"]["accuracy"] > summary["vector_rag"]["accuracy"]
+
+
+def test_chat_with_csv(client) -> None:
+    headers = register(client, "E2E Analytics")
+    csv = (SAMPLES.parent / "datasets" / "employees.csv").read_bytes()
+    up = client.post(f"{API}/datasets/upload", headers=headers, files={"file": ("employees.csv", csv, "text/csv")})
+    assert up.status_code == 201, up.text
+    r = client.post(f"{API}/datasets/{up.json()['id']}/query", headers=headers,
+                    json={"question": "How many employees are in each department?"})
+    assert r.status_code == 200, r.text
+    assert r.json()["sql"].lower().startswith(("select", "with")) and r.json()["rows"]
+    bad = client.post(f"{API}/datasets/{up.json()['id']}/query", headers=headers,
+                      json={"question": "x", "sql": "SELECT * FROM read_csv('/etc/passwd')"})
+    assert bad.status_code in (400, 422) and bad.json()["error"]["code"] == "SQL_REJECTED"
+
+
+def test_document_permissions_and_curation(client, tenant) -> None:
+    # Restricted upload is processed by the worker and hidden from members outside the group.
+    member_email = f"e2e-member-{uuid.uuid4().hex[:6]}@example.com"
+    assert client.post(f"{API}/auth/users", headers=tenant,
+                       json={"email": member_email, "password": PASSWORD}).status_code == 201
+    member = client.post(f"{API}/auth/login", json={"email": member_email, "password": PASSWORD}).json()
+    member_h = {"Authorization": f"Bearer {member['access_token']}"}
+    secret = b"# Board memo\n\nOrion Labs acquires Zephyr Systems. Zephyr Systems uses Kafka."
+    up = client.post(f"{API}/documents/upload", headers=tenant, data={"access_groups": "board"},
+                     files={"file": ("memo.md", secret)})
+    assert up.status_code == 202, up.text
+    doc_id = up.json()["document"]["id"]
+    for _ in range(120):
+        if client.get(f"{API}/documents/{doc_id}/status", headers=tenant).json()["status"] == "COMPLETED":
+            break
+        time.sleep(1)
+    assert client.get(f"{API}/documents/{doc_id}", headers=member_h).status_code == 404
+    hits = client.get(f"{API}/graph/entities", headers=member_h, params={"q": "Zephyr"}).json()
+    assert hits == []
+    # Admin curation: rename an entity and see it in search.
+    zephyr = client.get(f"{API}/graph/entities", headers=tenant, params={"q": "Zephyr"}).json()
+    assert zephyr, "entity extracted from the restricted memo"
+    r = client.patch(f"{API}/graph/entities/{zephyr[0]['id']}", headers=tenant, json={"name": "Zephyr Systems Ltd"})
+    assert r.status_code == 200, r.text
+    assert client.patch(f"{API}/graph/entities/{zephyr[0]['id']}", headers=member_h,
+                        json={"name": "nope"}).status_code == 403
+
+
+def test_metrics_and_observability() -> None:
+    base = API.rsplit("/api/", 1)[0]
+    text = httpx.get(f"{base}/metrics", timeout=5).text
+    assert "graphrag_http_requests_total" in text and "graphrag_ingestion_jobs" in text
+    assert httpx.get(f"{API}/auth/providers", timeout=5).json()["password"] is True
